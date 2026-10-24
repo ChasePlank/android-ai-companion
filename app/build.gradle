@@ -1,8 +1,8 @@
 plugins { id 'com.android.application' }
 android {
  namespace 'com.chase.companion'
- compileSdk 37
- defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 37; versionCode 2; versionName '0.2-diagnostic' }
- // Build runs on JDK 27; keep Android app source and bytecode at Java 17.
+ compileSdk 36
+ defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode 3; versionName '0.3-diagnostic' }
+ // Build runs on JDK 27; Android source/bytecode compatibility remains Java 17.
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }

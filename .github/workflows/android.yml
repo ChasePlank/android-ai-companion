@@ -15,17 +15,10 @@ jobs:
         with:
           distribution: oracle
           java-version: '27'
-      - name: Refresh Android SDK command-line tools
+      - name: Install Android API 36
         run: |
           test -n "$ANDROID_HOME"
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install 'cmdline-tools;latest'
-      - name: List available Android SDK packages including previews
-        run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --list --channel=3
-      - name: Install Android API 37 including preview channels
-        run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --channel=3 --install 'platforms;android-37'
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install 'platforms;android-36'
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '9.8.2'
