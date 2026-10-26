@@ -2,7 +2,19 @@ plugins { id 'com.android.application' }
 android {
  namespace 'com.chase.companion'
  compileSdk 36
- defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode 3; versionName '0.3-diagnostic' }
- // Build runs on JDK 27; Android source/bytecode compatibility remains Java 17.
+ defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode 4; versionName '0.4-avatar-preview' }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+ sourceSets { main { assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets')) } }
 }
+kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
+dependencies {
+ implementation 'com.google.android.filament:filament-android:1.78.1'
+ implementation 'com.google.android.filament:gltfio-android:1.78.1'
+ implementation 'com.google.android.filament:filament-utils-android:1.78.1'
+}
+def copyAvatar = tasks.register('copyAvatar', Sync) {
+ from(rootProject.file('roxanne_wolf_security_breach.glb'))
+ into(layout.buildDirectory.dir('generated/avatarAssets'))
+ doFirst { if (!rootProject.file('roxanne_wolf_security_breach.glb').isFile()) throw new GradleException('Roxanne GLB missing at repository root') }
+}
+tasks.named('preBuild').configure { dependsOn(copyAvatar) }
