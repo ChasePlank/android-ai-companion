@@ -4,7 +4,7 @@ android {
  compileSdk 36
  defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode 4; versionName '0.4-avatar-preview' }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
- sourceSets { main { assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets')) } }
+ sourceSets { main { assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets').get().asFile) } }
 }
 kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
 dependencies {
