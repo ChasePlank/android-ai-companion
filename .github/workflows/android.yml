@@ -15,40 +15,14 @@ jobs:
         with:
           distribution: oracle
           java-version: '27'
-      - name: Discover and install Android API 37
+      - name: Install Android API 36
         shell: bash
         run: |
           set -euo pipefail
           test -n "$ANDROID_HOME"
-          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          catalog="$RUNNER_TEMP/sdk-catalog.txt"
-          if ! "$sdkmanager" --sdk_root="$ANDROID_HOME" --list --channel=3 --include_obsolete > "$catalog" 2>&1; then
+          if ! "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install 'platforms;android-36' > "$RUNNER_TEMP/sdk-install.txt" 2>&1; then
             {
-              echo '## SDK catalog lookup failed'
-              echo '```text'
-              tail -n 20 "$catalog"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            tail -n 20 "$catalog"
-            exit 1
-          fi
-          awk -F '|' '{gsub(/^[ \t]+|[ \t]+$/, "", $1); if ($1 ~ /^platforms;/) print $1}' "$catalog" | sort -Vu > "$RUNNER_TEMP/sdk-platforms.txt"
-          {
-            echo '## Android SDK discovery'
-            echo 'Catalog includes stable, beta, dev, canary and obsolete packages.'
-            echo 'Last 35 platform identifiers (version-sorted):'
-            echo '```text'
-            tail -n 35 "$RUNNER_TEMP/sdk-platforms.txt"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          if ! grep -Fxq 'platforms;android-37' "$RUNNER_TEMP/sdk-platforms.txt"; then
-            echo 'API 37 numeric package is unavailable in this runner catalog. No preview identifier was guessed and no metadata checks were bypassed.' >> "$GITHUB_STEP_SUMMARY"
-            echo '::error::API 37 package unavailable across all channels. See Android SDK discovery in the run summary.'
-            exit 1
-          fi
-          if ! "$sdkmanager" --sdk_root="$ANDROID_HOME" --channel=3 --install 'platforms;android-37' > "$RUNNER_TEMP/sdk-install.txt" 2>&1; then
-            {
-              echo '## API 37 installation failed'
+              echo '## API 36 installation failed'
               echo '```text'
               tail -n 20 "$RUNNER_TEMP/sdk-install.txt"
               echo '```'
@@ -56,8 +30,8 @@ jobs:
             tail -n 20 "$RUNNER_TEMP/sdk-install.txt"
             exit 1
           fi
-          test -f "$ANDROID_HOME/platforms/android-37/android.jar"
-          echo 'API 37 installed; continuing to the APK build.' >> "$GITHUB_STEP_SUMMARY"
+          test -f "$ANDROID_HOME/platforms/android-36/android.jar"
+          echo '## Building with API 36 and Filament 1.75.0' >> "$GITHUB_STEP_SUMMARY"
       - name: Fetch and verify official Filament AARs
         run: python3 tools/fetch_filament.py
       - uses: gradle/actions/setup-gradle@v6

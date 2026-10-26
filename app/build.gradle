@@ -1,20 +1,20 @@
 plugins { id 'com.android.application' }
 android {
  namespace 'com.chase.companion'
- compileSdk 37
+ compileSdk 36
  defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode 4; versionName '0.4-avatar-preview' }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
  sourceSets { main { assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets').get().asFile) } }
 }
 kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
 dependencies {
- implementation files(rootProject.file('vendor/filament/filament-v1.78.1-android.aar'))
- implementation files(rootProject.file('vendor/filament/gltfio-v1.78.1-android.aar'))
- implementation files(rootProject.file('vendor/filament/filament-utils-v1.78.1-android.aar'))
+ implementation files(rootProject.file('vendor/filament/filament-v1.75.0-android.aar'))
+ implementation files(rootProject.file('vendor/filament/gltfio-v1.75.0-android.aar'))
+ implementation files(rootProject.file('vendor/filament/filament-utils-v1.75.0-android.aar'))
  implementation 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.4.0'
- implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0'
- implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0'
- implementation 'androidx.annotation:annotation:1.10.0'
+ implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0'
+ implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+ implementation 'androidx.annotation:annotation:1.9.0'
 }
 def copyAvatar = tasks.register('copyAvatar', Sync) {
  from(rootProject.file('roxanne_wolf_security_breach.glb'))
