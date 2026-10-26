@@ -19,6 +19,8 @@ jobs:
         run: |
           test -n "$ANDROID_HOME"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install 'platforms;android-36'
+      - name: Fetch and verify official Filament AARs
+        run: python3 tools/fetch_filament.py
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '9.8.2'
