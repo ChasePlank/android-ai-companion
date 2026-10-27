@@ -1,8 +1,11 @@
 plugins { id 'com.android.application' }
+def ciRunNumber = System.getenv('GITHUB_RUN_NUMBER')
+def diagnosticVersionCode = ciRunNumber ? 4 + ciRunNumber.toInteger() : 4
+def diagnosticVersionName = ciRunNumber ? "0.4-avatar-preview.build-${ciRunNumber}" : '0.4-avatar-preview-local'
 android {
  namespace 'com.chase.companion'
  compileSdk 36
- defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode 4; versionName '0.4-avatar-preview' }
+ defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode diagnosticVersionCode; versionName diagnosticVersionName }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
  sourceSets { main { assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets').get().asFile) } }
 }

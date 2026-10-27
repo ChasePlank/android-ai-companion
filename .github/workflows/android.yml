@@ -15,6 +15,24 @@ jobs:
         with:
           distribution: oracle
           java-version: '27'
+      - name: Restore persistent diagnostic signing key
+        shell: bash
+        env:
+          COMPANION_DEBUG_KEYSTORE_BASE64: ${{ secrets.COMPANION_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$COMPANION_DEBUG_KEYSTORE_BASE64" ]; then
+            echo '::error::Add the COMPANION_DEBUG_KEYSTORE_BASE64 Actions repository secret containing a base64-encoded debug keystore (alias androiddebugkey; store and key passwords android). Keep and reuse this key; do not regenerate it for each build.'
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$HOME/.android"
+          printf '%s' "$COMPANION_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/debug.keystore"
+          test -s "$HOME/.android/debug.keystore"
+          keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey > /dev/null
+          echo '## Persistent diagnostic signing key restored' >> "$GITHUB_STEP_SUMMARY"
+          echo "Version code: $((GITHUB_RUN_NUMBER + 4))" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version name: 0.4-avatar-preview.build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
       - name: Install Android API 36
         shell: bash
         run: |
@@ -60,6 +78,10 @@ jobs:
           exit "$status"
       - uses: actions/upload-artifact@v7
         with:
-          name: companion-diagnostic-debug
+          name: companion-diagnostic-debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Remove runner signing key
+        if: always()
+        shell: bash
+        run: rm -f "$HOME/.android/debug.keystore"
