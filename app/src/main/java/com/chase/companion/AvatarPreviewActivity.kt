@@ -9,6 +9,7 @@ import android.view.SurfaceView
 import android.view.View
 import android.widget.*
 import com.google.android.filament.IndirectLight
+import com.google.android.filament.Renderer
 import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
 import org.json.JSONObject
@@ -129,6 +130,11 @@ class AvatarPreviewActivity : Activity() {
             Utils.init()
             val v = ModelViewer(surface)
             viewer = v
+            v.renderer.clearOptions = Renderer.ClearOptions().apply {
+                clear = true
+                discard = true
+                clearColor = doubleArrayOf(0.0, 0.0, 0.0, 1.0)
+            }
             v.autoPlayAnimations = false
             surface.setOnTouchListener(v)
             val lights = v.engine.lightManager
