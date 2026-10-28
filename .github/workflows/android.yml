@@ -92,6 +92,16 @@ jobs:
           "$apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
           actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | tr -d ':\r ' | tr '[:upper:]' '[:lower:]')
           count=$(grep -cE '^Signer #[0-9]+ certificate SHA-256 digest:' "$RUNNER_TEMP/apk-signature.txt" || true)
+          {
+            echo '## Public signing diagnostics'
+            echo "apksigner path: $apksigner"
+            echo "Expected certificate SHA-256: $expected"
+            echo "Extracted certificate SHA-256: ${actual:-<empty>}"
+            echo "Matched signer count: $count"
+            echo '```text'
+            cat "$RUNNER_TEMP/apk-signature.txt"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$count" != 1 ] || [ "$actual" != "$expected" ]; then
             echo '::error::APK signer does not match the persistent keystore. Artifact upload blocked.'
             exit 1
