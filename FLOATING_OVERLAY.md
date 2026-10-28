@@ -1,27 +1,28 @@
-# First floating 3D overlay milestone
+# Floating 3D overlay and coordinated idle face
 
-The overlay controls now request a process-scoped 3D Roxanne window instead of the diagnostic text bubble. The original avatar preview and Qwen chat are unchanged. Existing signing settings are unchanged.
+The overlay controls request a process-scoped chest-up Roxanne window. The avatar preview, Qwen chat and persistent signing setup are unchanged.
 
-## Included
+## Implemented in this revision
 
-- Bundled offline GLB rendering through a non-opaque TextureView, transparent clear color and translucent Filament view. Transparency still needs phone verification.
-- Initial chest-up camera framing based on normalized model height. Crop, facing direction, ears, hair and shoulders need visual tuning on the phone.
-- Draggable title bar, explicit close button, and the existing Hide overlay control. Movement is clamped to current display metrics. Transparent areas within the window may still intercept touches.
-- Calibrated jaw rest at -8 degrees local Y. No embedded animations autoplay.
-- Roughly 30 Hz render scheduling while the display is on and interactive. Closing removes frame callbacks and releases custom lighting before ModelViewer's detach listener destroys its engine.
-- Asset loading on a worker thread; Filament operations remain on the main thread. Late asset results are ignored after close.
+- Existing bundled GLB, chest-up camera estimate, non-opaque TextureView, translucent rendering, draggable title, close and Hide controls remain. Crop/transparency still need phone testing.
+- Both eyes share one gaze target, with smooth transitions, varied holds and probabilistic returns to center. Provisional eye limits are +/-6 degrees horizontally and +/-3 vertically; not phone-calibrated. Direction mapping uses FacialCalibration; positive-X down remains an inferred direction awaiting confirmation.
+- Both upper lids and both lower lids share one blink amount. Upper X: 0 / +25 / +50 degrees at open / halfway / closed. Lower X: 0 / -10 / -50. All lid offsets return to original pose after each blink.
+- Random waits of 2.5-6.5 seconds, closing 80-120 ms, closed hold 15-35 ms and reopening 130-200 ms. A 12% optional second blink uses a 140-280 ms gap; no chains beyond a double blink. These are proposed animation parameters, not claims of physiological accuracy or phone-tested appearance.
+- Pause restores original eyes/eyelids without changing jaw rest; Resume restarts the idle schedule. Long frame gaps reset idle state instead of fast-forwarding through missed blinks.
+- Original local transforms are cached once, then multiplied by fresh offsets each frame to avoid cumulative rotation drift. Missing eye pair disables gaze; missing any lid disables the whole blink group, with a warning.
+- Procedural animation runs in the existing render callback before bone-matrix updates; no separate repeating animation timers survive overlay close.
 
-## Not included yet
+## Still pending
 
-Random blinking, shared gaze animation and speech-to-jaw integration are not enabled by this milestone. FacialCalibration.kt remains the source for the next animation stage. This is not a foreground service and does not promise survival across process termination, reboot or background restrictions. Rotation/inset behavior and device performance remain untested.
+No speech-driven jaw, head movement, breathing/body movement or foreground service is included. Jaw remains -8 degrees local Y. Overlay survival across process termination/reboot is not promised. Transparent window areas may intercept touch. Rotation, lifecycle, performance, blink shape and eye movement need phone testing. No build result is claimed for this revision.
 
 ## Later phone test
 
-1. Update the installed app without uninstalling, using the verified new APK.
-2. Open Overlay controls, grant display-over-apps permission and tap Show floating Roxanne.
-3. Check loading, textures, lighting, transparent background and chest-up framing.
-4. Drag by the title, open Qwen chat, then switch to another app. Check focus and touch behavior.
-5. Close with the X button, reopen, and test Hide overlay. Repeat to catch resource-lifecycle issues.
-6. Lock/unlock and rotate; report disappearance, errors, bad positioning, heat or stutter.
+1. Install the new verified APK over the existing app.
+2. Show floating Roxanne and check crop, textures, transparency and resting jaw.
+3. Watch both eyes: they must move in the same visual direction and not roll or cross.
+4. Watch a minute of blinking: upper lids do most early movement, lower lids pass -10 at halfway and reach -50 only at full closure. Check both sides meet without gaps or clipping.
+5. Pause: eyes/lids should return to original pose, with jaw still closed. Resume and test again.
+6. Drag, close, reopen, switch apps, lock/unlock and rotate. Report stutter, heat, leaks or failures.
 
-A passing GitHub build is only compilation verification; no phone rendering or performance result is claimed here.
+A passing GitHub build only verifies compilation, not rendering or natural appearance.

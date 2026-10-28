@@ -66,6 +66,17 @@ object FloatingAvatarOverlay {
             text = "Loading Roxanne… · drag here"
             setTextColor(0xffffffff.toInt()); textSize = 12f; gravity = Gravity.CENTER_VERTICAL
         }
+        private val idleButton = Button(context).apply {
+            text = "Ⅱ"; contentDescription = "Pause idle facial movement"; isEnabled = false
+            setOnClickListener {
+                idle?.let { animator ->
+                    animator.setIdleEnabled(!animator.enabled)
+                    viewer?.animator?.updateBoneMatrices()
+                    text = if (animator.enabled) "Ⅱ" else "▶"
+                    contentDescription = if (animator.enabled) "Pause idle facial movement" else "Resume idle facial movement"
+                }
+            }
+        }
         private val metrics get() = context.resources.displayMetrics
         private fun dp(value: Int) = (value * metrics.density).roundToInt()
         private val width = minOf(dp(240), metrics.widthPixels)
@@ -80,6 +91,7 @@ object FloatingAvatarOverlay {
             y = minOf(dp(100), max(0, metrics.heightPixels - height))
         }
         private var viewer: ModelViewer? = null
+        private var idle: IdleFacialAnimator? = null
         private var ambient: IndirectLight? = null
         private var source: ByteBuffer? = null
         private var added = false
@@ -97,13 +109,21 @@ object FloatingAvatarOverlay {
                         (lastFrame == 0L || time - lastFrame >= 33_000_000L)) {
                         lastFrame = time
                         if (texture.width > 0 && texture.height > 0) frameCamera(v)
-                        if (ready) v.animator?.updateBoneMatrices()
+                        if (ready) { idle?.update(time); v.animator?.updateBoneMatrices() }
                         v.render(time)
                         if (loaded && !ready && v.progress >= 1f) {
                             ready = true
                             val jawSet = applyRestingJaw(v)
+                            val facial = IdleFacialAnimator(v)
+                            idle = facial
+                            idleButton.isEnabled = true
                             v.animator?.updateBoneMatrices()
-                            label.text = if (jawSet) "Roxanne · drag here" else "Jaw missing · drag here"
+                            label.text = when {
+                                !jawSet -> "Jaw missing · drag"
+                                facial.missingJoints.isNotEmpty() -> "Missing facial joints · drag"
+                                else -> "Roxanne · drag here"
+                            }
+                            if (facial.missingJoints.isNotEmpty()) Toast.makeText(context, "Idle missing joints: ${facial.missingJoints.joinToString()}", Toast.LENGTH_LONG).show()
                         }
                     }
                 } catch (error: Exception) {
@@ -118,6 +138,7 @@ object FloatingAvatarOverlay {
         fun show() {
             val bar = LinearLayout(context).apply { setBackgroundColor(0xcc20242c.toInt()); gravity = Gravity.CENTER_VERTICAL }
             bar.addView(label, LinearLayout.LayoutParams(0, dp(40), 1f))
+            bar.addView(idleButton, LinearLayout.LayoutParams(dp(48), dp(40)))
             bar.addView(Button(context).apply {
                 text = "×"; contentDescription = "Close floating Roxanne"
                 setOnClickListener { close() }
@@ -239,6 +260,7 @@ object FloatingAvatarOverlay {
 
         private fun releaseCustomResources() {
             Choreographer.getInstance().removeFrameCallback(frame)
+            idle = null
             viewer?.let { v ->
                 v.scene.indirectLight = null
                 ambient?.let { v.engine.destroyIndirectLight(it) }
