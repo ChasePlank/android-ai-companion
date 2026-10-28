@@ -39,6 +39,7 @@ public class LocalChatActivity extends Activity {
   input = new EditText(this); input.setHint("Message your local Qwen model"); input.setMaxLines(4); root.addView(input);
   send = add(root,"Send to Qwen", () -> submit(input.getText().toString()));
   add(root,"Speak a message", this::listen);
+  add(root,"Test spoken animation", this::testSpokenAnimation);
   add(root,"Stop request / speech", this::cancel);
   add(root,"Clear conversation", () -> { cancel(); history.clear(); transcript.setText(""); status.setText("Conversation cleared"); });
   setContentView(root);
@@ -56,6 +57,13 @@ public class LocalChatActivity extends Activity {
  private Button add(LinearLayout root,String text,Runnable action) { Button b=new Button(this); b.setText(text); b.setOnClickListener(v -> action.run()); root.addView(b); return b; }
  private JSONObject message(String role,String text) throws JSONException { return new JSONObject().put("role",role).put("content",text); }
  private void append(String text) { transcript.append(text+"\n\n"); scroll.post(() -> scroll.fullScroll(android.view.View.FOCUS_DOWN)); }
+ private void testSpokenAnimation() {
+  if(closed) return;
+  if(busy) { status.setText("Stop the current Qwen request before testing speech"); return; }
+  if(!ready || tts==null) { status.setText("Speech is not ready. Wait for text-to-speech initialization and check that an English voice is installed."); return; }
+  status.setText("Speech animation test queued — no Qwen request. Show the floating overlay to see the jaw.");
+  speakReply("Hello! This is the spoken animation test. My jaw should move while I speak, then close when I finish. Blinking and idle movement can continue.");
+ }
  private void stopSpeech() {
   final String id=activeUtterance; activeUtterance=null;
   SpeechJawState.finished(id);
@@ -67,10 +75,10 @@ public class LocalChatActivity extends Activity {
   final String id=SpeechJawState.prepare(); activeUtterance=id;
   try {
    if(tts.speak(answer,TextToSpeech.QUEUE_FLUSH,null,id)==TextToSpeech.ERROR) {
-    SpeechJawState.finished(id); activeUtterance=null; status.setText("Local reply received; speech could not be queued");
+    SpeechJawState.finished(id); activeUtterance=null; status.setText("Speech could not be queued; displayed chat is unchanged");
    }
   } catch(RuntimeException error) {
-   stopSpeech(); status.setText("Local reply received; speech failed: "+error.getMessage());
+   stopSpeech(); status.setText("Speech failed: "+error.getMessage());
   }
  }
  private void submit(String text) {
