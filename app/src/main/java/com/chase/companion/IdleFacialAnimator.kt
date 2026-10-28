@@ -4,7 +4,7 @@ import android.opengl.Matrix
 import com.google.android.filament.utils.ModelViewer
 import kotlin.random.Random
 
-/** Procedural idle motion. Timing and gaze amplitudes are provisional, not phone-calibrated. */
+/** Procedural idle motion. Eye limits are user-calibrated; timing and appearance need phone testing. */
 class IdleFacialAnimator(private val viewer: ModelViewer) {
     private data class Joint(val instance: Int, val base: FloatArray)
     private val joints = mutableMapOf<String, Joint>()
@@ -110,7 +110,7 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
         if (gazeStart < 0f && clock >= nextGaze) {
             fromRight = currentRight; fromUp = currentUp
             if (random.nextFloat() < 0.45f) { targetRight = 0f; targetUp = 0f }
-            else { targetRight = between(-6f, 6f); targetUp = between(-3f, 3f) }
+            else { targetRight = between(-30f, 20f); targetUp = between(-20f, 20f) }
             gazeDuration = between(0.14f, 0.28f); gazeStart = clock
         }
         if (gazeStart >= 0f) {
