@@ -3,15 +3,11 @@ package com.chase.companion;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
-import android.graphics.PixelFormat;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
-import android.view.Gravity;
-import android.view.MotionEvent;
-import android.view.WindowManager;
 import android.widget.*;
 import java.util.ArrayList;
 import java.util.Locale;
@@ -21,22 +17,19 @@ public class MainActivity extends Activity {
  private boolean voiceReady;
  private TextView log;
  private EditText input;
- private static WindowManager wm;
- private static TextView bubble;
- private static WindowManager.LayoutParams position;
  private static final int VOICE = 101;
  @Override public void onCreate(Bundle state) {
   super.onCreate(state);
   LinearLayout root = new LinearLayout(this);
   root.setOrientation(LinearLayout.VERTICAL); root.setPadding(24,48,24,24);
   TextView title = new TextView(this); title.setText("AI Companion — diagnostic build"); title.setTextSize(22); root.addView(title);
-  TextView notice = new TextView(this); notice.setText("No AI model connected yet. Replies below are explicit diagnostic echoes. Speech recognition may use your installed provider's cloud service. No always-on microphone."); root.addView(notice);
+  TextView notice = new TextView(this); notice.setText("These controls produce diagnostic echoes, not Qwen replies. Use Qwen chat for the local model. Speech recognition may use your installed provider's cloud service. No always-on microphone. The 3D overlay is experimental; framing and transparency need phone testing."); root.addView(notice);
   button(root, "Enable display over other apps", () -> {
    try { startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()))); }
    catch (ActivityNotFoundException e) { toast("Overlay settings unavailable"); }
   });
-  button(root, "Show draggable overlay", this::showOverlay);
-  button(root, "Hide overlay", MainActivity::hideOverlay);
+  button(root, "Show floating Roxanne", this::showOverlay);
+  button(root, "Hide overlay", FloatingAvatarOverlay::hide);
   button(root, "Tap to speak", this::listen);
   button(root, "Stop spoken reply", () -> { if (tts != null) tts.stop(); });
   input = new EditText(this); input.setHint("Type a diagnostic message"); root.addView(input);
@@ -76,24 +69,7 @@ public class MainActivity extends Activity {
  }
  private void showOverlay() {
   if (!Settings.canDrawOverlays(this)) { toast("Grant display-over-apps permission first"); return; }
-  if (bubble != null) return;
-  wm = (WindowManager)getApplicationContext().getSystemService(WINDOW_SERVICE);
-  TextView view = new TextView(getApplicationContext()); view.setText("AI\nHold to close"); view.setTextSize(16); view.setTextColor(0xffffffff); view.setBackgroundColor(0xdd303f70); view.setGravity(Gravity.CENTER); view.setPadding(20,20,20,20);
-  position = new WindowManager.LayoutParams(180,150,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,PixelFormat.TRANSLUCENT);
-  position.gravity = Gravity.TOP | Gravity.LEFT; position.x = 24; position.y = 180;
-  view.setOnTouchListener(new android.view.View.OnTouchListener() {
-   float sx,sy; int x,y; long started;
-   public boolean onTouch(android.view.View v, MotionEvent e) {
-    switch(e.getActionMasked()) {
-     case MotionEvent.ACTION_DOWN: sx=e.getRawX(); sy=e.getRawY(); x=position.x; y=position.y; started=System.currentTimeMillis(); return true;
-     case MotionEvent.ACTION_MOVE: position.x=x+(int)(e.getRawX()-sx); position.y=y+(int)(e.getRawY()-sy); if(bubble!=null) wm.updateViewLayout(bubble,position); return true;
-     case MotionEvent.ACTION_UP: if(System.currentTimeMillis()-started>700 && Math.abs(e.getRawX()-sx)<20 && Math.abs(e.getRawY()-sy)<20) hideOverlay(); return true;
-     case MotionEvent.ACTION_CANCEL: return true;
-    } return false;
-   }
-  });
-  try { wm.addView(view,position); bubble=view; } catch (RuntimeException e) { toast("Overlay failed: " + e.getMessage()); }
+  FloatingAvatarOverlay.show(getApplicationContext());
  }
- private static void hideOverlay() { if(bubble!=null && wm!=null) { try { wm.removeView(bubble); } catch(IllegalArgumentException ignored) {} bubble=null; } }
  @Override protected void onDestroy() { if(tts!=null) { tts.stop(); tts.shutdown(); } super.onDestroy(); }
 }
