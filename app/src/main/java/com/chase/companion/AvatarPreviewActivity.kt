@@ -12,6 +12,7 @@ import android.view.View
 import android.widget.*
 import com.google.android.filament.IndirectLight
 import com.google.android.filament.Renderer
+import com.google.android.filament.utils.Manipulator
 import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
 import org.json.JSONObject
@@ -24,6 +25,8 @@ class AvatarPreviewActivity : Activity() {
     private val jawClosedDegrees = -8f
     private val jawOpenDegrees = 20f
     private var viewer: ModelViewer? = null
+    private var cameraControls: Manipulator? = null
+    private var centerNote = "Upper-torso focus pending."
     private var ambient: IndirectLight? = null
     private var source: ByteBuffer? = null
     private lateinit var status: TextView
@@ -81,7 +84,7 @@ class AvatarPreviewActivity : Activity() {
                         val jawSet = applyJawOpenness(0f)
                         v.animator?.updateBoneMatrices()
                         syncControls()
-                        status.text = "Ready. ${jointNames.size} transform nodes. " + if (jawSet) "Jaw resting at -8° local Y. Drag to orbit; pinch to zoom." else "Jaw not found. Drag to orbit; pinch to zoom."
+                        status.text = "Ready. ${jointNames.size} transform nodes. $centerNote " + if (jawSet) "Jaw resting at -8° local Y. Drag: orbit; two fingers: pan; pinch: zoom." else "Jaw not found. Drag: orbit; two fingers: pan; pinch: zoom."
                     }
                 }
             } catch (error: Exception) {
@@ -108,6 +111,13 @@ class AvatarPreviewActivity : Activity() {
         val surface = SurfaceView(this)
         root.addView(surface, LinearLayout.LayoutParams(-1, 0, 1f))
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel.addView(Button(this).apply {
+            text = "Recenter view (keep pose)"
+            setOnClickListener {
+                cameraControls?.let { it.jumpToBookmark(it.homeBookmark) }
+                status.text = "Camera returned to starting view. $centerNote Joint offsets and clip playback were not changed."
+            }
+        })
         inspection = TextView(this).apply { text = "Inspecting model…"; setTextIsSelectable(true) }
         panel.addView(inspection)
         clips = Spinner(this).apply { isEnabled = false }
@@ -134,7 +144,7 @@ class AvatarPreviewActivity : Activity() {
         panel.addView(joints)
         axis = Spinner(this).apply { isEnabled = false; adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Local X axis", "Local Y axis", "Local Z axis")); setSelection(1) }
         panel.addView(axis)
-        panel.addView(TextView(this).apply { text = "All transform nodes are searchable: bones, hair controls and possible mesh/group nodes. Search ignores case and matches every space-separated term. Names are not proof of function. Filtering never resets poses. Manual offsets: −90° to +90° per local axis; XYZ offsets combine relative to the original transform. Start small on untested nodes. Stop reloads the full rig." })
+        panel.addView(TextView(this).apply { text = "View: one-finger orbit, two-finger pan, pinch zoom. Recenter view restores the camera without resetting poses. Upper-torso pivot is estimated below the head joint and needs visual checking. All transform nodes are searchable: bones, hair controls and possible mesh/group nodes. Search ignores case and matches every space-separated term. Names are not proof of function. Filtering never resets poses. Manual offsets: −90° to +90° per local axis; XYZ offsets combine relative to the original transform. Start small on untested nodes. Stop reloads the full rig." })
         angles = TextView(this).apply { text = "Selected node: loading"; setTextIsSelectable(true) }
         panel.addView(angles)
         slider = SeekBar(this).apply { max = 180; progress = 90; isEnabled = false }
@@ -168,13 +178,20 @@ class AvatarPreviewActivity : Activity() {
                 viewer?.let { v -> v.scene.indirectLight = null; ambient?.let { v.engine.destroyIndirectLight(it) } }
                 ambient = null
                 viewer = null
+                cameraControls = null
                 source = null
                 // ModelViewer's later detach listener owns engine/resource destruction.
             }
         })
         try {
             Utils.init()
-            val v = ModelViewer(surface)
+            val orbit = Manipulator.Builder()
+                .targetPosition(0f, 0f, -4f)
+                .orbitHomePosition(0f, 0f, -2f)
+                .viewport(surface.width.coerceAtLeast(1), surface.height.coerceAtLeast(1))
+                .build(Manipulator.Mode.ORBIT)
+            cameraControls = orbit
+            val v = ModelViewer(surfaceView = surface, manipulator = orbit)
             viewer = v
             v.renderer.clearOptions = Renderer.ClearOptions().apply { clear = true; discard = true; clearColor = doubleArrayOf(0.0, 0.0, 0.0, 1.0) }
             v.autoPlayAnimations = false
@@ -198,6 +215,36 @@ class AvatarPreviewActivity : Activity() {
             override fun onStartTrackingTouch(bar: SeekBar) {}
             override fun onStopTrackingTouch(bar: SeekBar) {}
         })
+    }
+
+    private fun centerUpperTorso(v: ModelViewer): String {
+        val asset = v.asset ?: return "No model to center."
+        val tm = v.engine.transformManager
+        val head = asset.entities.firstOrNull { asset.getName(it) == "Head_jnt_06" }
+            ?: return "Whole-model center: head joint missing."
+        val headInstance = tm.getInstance(head)
+        val rootInstance = tm.getInstance(asset.root)
+        if (headInstance == 0 || rootInstance == 0) return "Whole-model center: transform missing."
+        val half = asset.boundingBox.halfExtent
+        val extent = 2f * maxOf(half[0], half[1], half[2])
+        if (!extent.isFinite() || extent <= 0f) return "Whole-model center: invalid bounds."
+        val height = 4f * half[1] / extent
+        if (!height.isFinite() || height <= 0f) return "Whole-model center: invalid height."
+        val headWorld = FloatArray(16)
+        val rootTransform = FloatArray(16)
+        tm.getWorldTransform(headInstance, headWorld)
+        tm.getTransform(rootInstance, rootTransform)
+        // One-time translation of the normalized asset, before manual base transforms are cached.
+        // The torso estimate is 12 percent of full height below the known head joint.
+        val x = headWorld[12]
+        val y = headWorld[13] - height * 0.12f
+        val z = headWorld[14]
+        if (!x.isFinite() || !y.isFinite() || !z.isFinite()) return "Whole-model center: invalid head position."
+        rootTransform[12] -= x
+        rootTransform[13] -= y
+        rootTransform[14] += -4f - z
+        tm.setTransform(rootInstance, rootTransform)
+        return "Upper-torso center estimated below head joint."
     }
 
     private fun updateNodeFilter(preferred: String? = joints.selectedItem as? String) {
@@ -224,6 +271,7 @@ class AvatarPreviewActivity : Activity() {
             v.loadModelGlb(buffer.duplicate().apply { rewind() })
             val asset = v.asset ?: error("Filament could not load the GLB")
             v.transformToUnitCube()
+            centerNote = centerUpperTorso(v)
             val tm = v.engine.transformManager
             val records = asset.entities.mapNotNull { entity ->
                 if (tm.getInstance(entity) == 0) null else Pair(entity, asset.getName(entity)?.takeIf { it.isNotBlank() } ?: "Unnamed node")
