@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Intent
 import android.opengl.Matrix
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Choreographer
 import android.view.SurfaceView
 import android.view.View
@@ -30,6 +32,8 @@ class AvatarPreviewActivity : Activity() {
     private lateinit var play: Button
     private lateinit var stop: Button
     private lateinit var joints: Spinner
+    private lateinit var search: EditText
+    private lateinit var matches: TextView
     private lateinit var axis: Spinner
     private lateinit var slider: SeekBar
     private lateinit var angles: TextView
@@ -37,6 +41,7 @@ class AvatarPreviewActivity : Activity() {
     private val original = mutableMapOf<Int, FloatArray>()
     private val offsets = mutableMapOf<Int, FloatArray>()
     private val jointNames = mutableListOf<String>()
+    private val visibleJointNames = mutableListOf<String>()
     private var jawLabel: String? = null
     private var resumed = false
     private var closed = false
@@ -71,9 +76,8 @@ class AvatarPreviewActivity : Activity() {
                         clips.isEnabled = count > 0
                         play.isEnabled = count > 0
                         stop.isEnabled = true
-                        slider.isEnabled = jointNames.isNotEmpty()
-                        joints.isEnabled = jointNames.isNotEmpty()
-                        axis.isEnabled = jointNames.isNotEmpty()
+                        search.isEnabled = true
+                        updateNodeFilter()
                         val jawSet = applyJawOpenness(0f)
                         v.animator?.updateBoneMatrices()
                         syncControls()
@@ -114,11 +118,23 @@ class AvatarPreviewActivity : Activity() {
         playback.addView(play, LinearLayout.LayoutParams(0, -2, 1f))
         playback.addView(stop, LinearLayout.LayoutParams(0, -2, 1f))
         panel.addView(playback)
+        val searchRow = LinearLayout(this)
+        search = EditText(this).apply {
+            hint = "Filter nodes: arm, hair, spine…"
+            contentDescription = "Filter transform nodes by name; spaces match all terms"
+            setSingleLine(true)
+            isEnabled = false
+        }
+        searchRow.addView(search, LinearLayout.LayoutParams(0, -2, 1f))
+        searchRow.addView(Button(this).apply { text = "Clear"; setOnClickListener { search.setText("") } }, LinearLayout.LayoutParams(-2, -2))
+        panel.addView(searchRow)
+        matches = TextView(this).apply { text = "Transform nodes loading…" }
+        panel.addView(matches)
         joints = Spinner(this).apply { isEnabled = false; adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Loading transform nodes…")) }
         panel.addView(joints)
         axis = Spinner(this).apply { isEnabled = false; adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Local X axis", "Local Y axis", "Local Z axis")); setSelection(1) }
         panel.addView(axis)
-        panel.addView(TextView(this).apply { text = "All transform nodes are listed: bones, hair controls and possible mesh/group nodes. Names are not proof of function. Manual offsets: −90° to +90° per local axis; XYZ offsets combine relative to the original transform. Start small on untested nodes. Stop reloads the full rig." })
+        panel.addView(TextView(this).apply { text = "All transform nodes are searchable: bones, hair controls and possible mesh/group nodes. Search ignores case and matches every space-separated term. Names are not proof of function. Filtering never resets poses. Manual offsets: −90° to +90° per local axis; XYZ offsets combine relative to the original transform. Start small on untested nodes. Stop reloads the full rig." })
         angles = TextView(this).apply { text = "Selected node: loading"; setTextIsSelectable(true) }
         panel.addView(angles)
         slider = SeekBar(this).apply { max = 180; progress = 90; isEnabled = false }
@@ -132,9 +148,14 @@ class AvatarPreviewActivity : Activity() {
         panel.addView(TextView(this).apply { text = "Model upload: JetteBoy / Sketchfab · CC-BY-4.0 label. Source and rights notes: AVATAR_PREVIEW.md."; textSize = 11f })
         root.addView(ScrollView(this).apply { addView(panel) }, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.34f).toInt()))
         setContentView(root)
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { updateNodeFilter() }
+            override fun afterTextChanged(s: Editable?) {}
+        })
         val selectionListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { syncControls() }
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
+            override fun onNothingSelected(parent: AdapterView<*>?) { syncControls() }
         }
         joints.onItemSelectedListener = selectionListener
         axis.onItemSelectedListener = selectionListener
@@ -179,12 +200,25 @@ class AvatarPreviewActivity : Activity() {
         })
     }
 
+    private fun updateNodeFilter(preferred: String? = joints.selectedItem as? String) {
+        val terms = search.text.toString().trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        visibleJointNames.clear()
+        visibleJointNames.addAll(jointNames.filter { label -> terms.all { label.contains(it, ignoreCase = true) } })
+        val labels = if (visibleJointNames.isEmpty()) listOf(if (jointNames.isEmpty()) "No transform nodes found" else "No matching nodes — clear filter") else visibleJointNames.toList()
+        joints.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        if (visibleJointNames.isNotEmpty()) joints.setSelection(visibleJointNames.indexOf(preferred).coerceAtLeast(0))
+        joints.isEnabled = readyReported && visibleJointNames.isNotEmpty()
+        matches.text = "Showing ${visibleJointNames.size} of ${jointNames.size} transform nodes"
+        syncControls()
+    }
+
     private fun loadModel(v: ModelViewer) {
         val buffer = source ?: return
         playing = false; activeClip = -1; elapsed = 0.0; lastFrame = 0L; loaded = false; readyReported = false
         play.text = "Play"; play.isEnabled = false; stop.isEnabled = false; clips.isEnabled = false
-        slider.isEnabled = false; joints.isEnabled = false; axis.isEnabled = false
-        entities.clear(); original.clear(); offsets.clear(); jointNames.clear(); jawLabel = null
+        slider.isEnabled = false; joints.isEnabled = false; axis.isEnabled = false; search.isEnabled = false
+        entities.clear(); original.clear(); offsets.clear(); jointNames.clear(); visibleJointNames.clear(); jawLabel = null
+        updateNodeFilter()
         slider.progress = 90
         try {
             v.loadModelGlb(buffer.duplicate().apply { rewind() })
@@ -201,8 +235,7 @@ class AvatarPreviewActivity : Activity() {
                 offsets[entity] = floatArrayOf(0f, 0f, 0f)
                 if (name == jawName && jawLabel == null) jawLabel = label
             }
-            joints.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, if (jointNames.isEmpty()) listOf("No transform nodes found") else jointNames.toList())
-            joints.setSelection(jointNames.indexOf(jawLabel).coerceAtLeast(0))
+            updateNodeFilter(jawLabel)
             axis.setSelection(1)
             val animator = v.animator
             val count = animator?.animationCount ?: 0
@@ -262,7 +295,9 @@ class AvatarPreviewActivity : Activity() {
         if (!readyReported) return
         pausePlayback()
         val label = jawLabel ?: run { status.text = "Joint not available: $jawName"; return }
-        joints.setSelection(jointNames.indexOf(label).coerceAtLeast(0)); axis.setSelection(1)
+        search.setText("")
+        updateNodeFilter(label)
+        axis.setSelection(1)
         if (applyJawOpenness(openness)) {
             viewer?.animator?.updateBoneMatrices(); syncControls()
             status.text = "Jaw: ${if (openness == 0f) jawClosedDegrees else jawOpenDegrees} degrees on local Y."
@@ -274,7 +309,10 @@ class AvatarPreviewActivity : Activity() {
         val label = joints.selectedItem as? String
         val entity = entities[label]
         val xyz = offsets[entity]
-        if (xyz == null) { slider.progress = 90; angles.text = "No node selected"; return }
+        val editable = readyReported && xyz != null
+        slider.isEnabled = editable
+        axis.isEnabled = editable
+        if (xyz == null) { slider.progress = 90; angles.text = "No node selected — clear or change the filter"; return }
         val selectedAxis = axis.selectedItemPosition.coerceIn(0, 2)
         slider.progress = xyz[selectedAxis].toInt() + 90
         angles.text = "$label\nManual offsets: X ${xyz[0]}° · Y ${xyz[1]}° · Z ${xyz[2]}°\nSelected axis: ${listOf("X", "Y", "Z")[selectedAxis]} = ${xyz[selectedAxis]}°"
