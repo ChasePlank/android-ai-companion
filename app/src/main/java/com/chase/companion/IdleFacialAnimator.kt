@@ -8,6 +8,7 @@ import kotlin.random.Random
 class IdleFacialAnimator(private val viewer: ModelViewer) {
     private data class Joint(val instance: Int, val base: FloatArray)
     private val joints = mutableMapOf<String, Joint>()
+    private var speechJaw: Joint? = null
     private val upper = listOf(FacialCalibration.LEFT_UPPER_LID, FacialCalibration.RIGHT_UPPER_LID)
     private val lower = listOf(FacialCalibration.LEFT_LOWER_LID, FacialCalibration.RIGHT_LOWER_LID)
     private val eyes = listOf(FacialCalibration.LEFT_EYE, FacialCalibration.RIGHT_EYE)
@@ -48,26 +49,24 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
             for (entity in asset.entities) {
                 val name = asset.getName(entity) ?: continue
                 val instance = tm.getInstance(entity)
-                if (name in wanted && instance != 0) {
-                    joints[name] = Joint(instance, FloatArray(16).also { tm.getTransform(instance, it) })
+                if (instance != 0 && (name in wanted || name == FacialCalibration.JAW)) {
+                    val joint = Joint(instance, FloatArray(16).also { tm.getTransform(instance, it) })
+                    if (name == FacialCalibration.JAW) speechJaw = joint else joints[name] = joint
                 }
             }
         }
     }
 
-    val missingJoints: List<String> get() = wanted.filter { it !in joints }
+    val missingJoints: List<String> get() = wanted.filter { it !in joints } + if (speechJaw == null) listOf(FacialCalibration.JAW) else emptyList()
     private val lidsAvailable get() = (upper + lower).all { it in joints }
     private val eyesAvailable get() = eyes.all { it in joints }
     private val headAvailable get() = head in joints
     private fun between(low: Float, high: Float) = low + random.nextFloat() * (high - low)
     private fun smooth(value: Float): Float { val t = value.coerceIn(0f, 1f); return t * t * (3f - 2f * t) }
 
-    fun setIdleEnabled(value: Boolean) {
-        enabled = value
-        reset()
-    }
+    fun setIdleEnabled(value: Boolean) { enabled = value; reset() }
 
-    /** Restore original head/eye/lid transforms without touching the calibrated jaw offset. */
+    /** Restore original head/eye/lid transforms without touching the speech-driven jaw. */
     private fun reset() {
         val tm = viewer.engine.transformManager
         joints.values.forEach { tm.setTransform(it.instance, it.base) }
@@ -78,6 +77,11 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
     }
 
     fun update(time: Long) {
+        // Overlay constructs us after applyRestingJaw: this cached jaw base already includes -8°.
+        speechJaw?.let { joint ->
+            val relative = (FacialCalibration.JAW_OPEN - FacialCalibration.JAW_CLOSED) * SpeechJawState.openness(time)
+            applyJoint(joint, 0f, relative, 0f)
+        }
         if (!enabled) { lastTime = 0L; return }
         if (lastTime == 0L) { lastTime = time; return }
         val delta = (time - lastTime).toDouble() / 1_000_000_000.0
@@ -164,6 +168,10 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
 
     private fun apply(name: String, xDegrees: Float, yDegrees: Float, zDegrees: Float = 0f) {
         val joint = joints[name] ?: return
+        applyJoint(joint, xDegrees, yDegrees, zDegrees)
+    }
+
+    private fun applyJoint(joint: Joint, xDegrees: Float, yDegrees: Float, zDegrees: Float) {
         Matrix.setIdentityM(rotation, 0)
         Matrix.rotateM(rotation, 0, xDegrees, 1f, 0f, 0f)
         Matrix.rotateM(rotation, 0, yDegrees, 0f, 1f, 0f)

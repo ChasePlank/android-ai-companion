@@ -6,6 +6,7 @@ import android.content.ActivityNotFoundException;
 import android.os.Bundle;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.widget.*;
 import org.json.*;
 import java.net.*;
@@ -23,6 +24,7 @@ public class LocalChatActivity extends Activity {
  private volatile int generation;
  private boolean busy, ready, closed;
  private TextToSpeech tts;
+ private String activeUtterance;
  private EditText input;
  private TextView status, transcript;
  private Button send;
@@ -43,10 +45,34 @@ public class LocalChatActivity extends Activity {
   tts = new TextToSpeech(getApplicationContext(), result -> {
    if(result == TextToSpeech.SUCCESS && tts != null) { int language=tts.setLanguage(Locale.US); ready=language!=TextToSpeech.LANG_MISSING_DATA && language!=TextToSpeech.LANG_NOT_SUPPORTED; }
   });
+  tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+   @Override public void onStart(String id) { SpeechJawState.started(id); }
+   @Override public void onDone(String id) { SpeechJawState.finished(id); }
+   @Override public void onError(String id) { SpeechJawState.finished(id); }
+   @Override public void onError(String id, int errorCode) { SpeechJawState.finished(id); }
+   @Override public void onStop(String id, boolean interrupted) { SpeechJawState.finished(id); }
+  });
  }
  private Button add(LinearLayout root,String text,Runnable action) { Button b=new Button(this); b.setText(text); b.setOnClickListener(v -> action.run()); root.addView(b); return b; }
  private JSONObject message(String role,String text) throws JSONException { return new JSONObject().put("role",role).put("content",text); }
  private void append(String text) { transcript.append(text+"\n\n"); scroll.post(() -> scroll.fullScroll(android.view.View.FOCUS_DOWN)); }
+ private void stopSpeech() {
+  final String id=activeUtterance; activeUtterance=null;
+  SpeechJawState.finished(id);
+  if(tts!=null) tts.stop();
+ }
+ private void speakReply(String answer) {
+  stopSpeech();
+  if(!ready || tts==null || closed) return;
+  final String id=SpeechJawState.prepare(); activeUtterance=id;
+  try {
+   if(tts.speak(answer,TextToSpeech.QUEUE_FLUSH,null,id)==TextToSpeech.ERROR) {
+    SpeechJawState.finished(id); activeUtterance=null; status.setText("Local reply received; speech could not be queued");
+   }
+  } catch(RuntimeException error) {
+   stopSpeech(); status.setText("Local reply received; speech failed: "+error.getMessage());
+  }
+ }
  private void submit(String text) {
   text=text.trim(); if(text.isEmpty() || busy) return;
   final String prompt=text; final int ticket=++generation;
@@ -60,7 +86,7 @@ public class LocalChatActivity extends Activity {
    }
    for(JSONObject item:recent) messages.put(item); messages.put(message("user",prompt));
   } catch(JSONException e) { status.setText("Could not prepare request: "+e.getMessage()); return; }
-  busy=true; send.setEnabled(false); input.setText(""); if(tts!=null) tts.stop();
+  busy=true; send.setEnabled(false); input.setText(""); stopSpeech();
   append("You: "+prompt); status.setText("Waiting for local Qwen…");
   worker.execute(() -> {
    HttpURLConnection current=null;
@@ -83,7 +109,7 @@ public class LocalChatActivity extends Activity {
      if(closed || ticket!=generation) return;
      busy=false; send.setEnabled(true);
      try { history.add(message("user",prompt)); history.add(message("assistant",answer)); while(history.size()>12) { history.remove(0); history.remove(0); } } catch(JSONException ignored) {}
-     append("Qwen: "+answer); status.setText("Local reply received"); if(ready) tts.speak(answer,TextToSpeech.QUEUE_FLUSH,null,"qwen");
+     append("Qwen: "+answer); status.setText("Local reply received"); speakReply(answer);
     });
    } catch(Exception error) {
     final String details=error.getClass().getSimpleName()+": "+error.getMessage();
@@ -92,14 +118,14 @@ public class LocalChatActivity extends Activity {
   });
  }
  private void cancel() {
-  generation++; busy=false; if(send!=null) send.setEnabled(true); if(tts!=null) tts.stop();
+  generation++; busy=false; if(send!=null) send.setEnabled(true); stopSpeech();
   final HttpURLConnection active=connection;
   if(active!=null) new Thread(active::disconnect,"cancel-local-request").start();
   if(status!=null) status.setText("Stopped locally; server may finish an in-flight generation");
  }
  private void listen() {
   if(busy) { status.setText("Stop the current request before speaking"); return; }
-  if(tts!=null) tts.stop();
+  stopSpeech();
   Intent intent=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH); intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
   try { startActivityForResult(intent,201); } catch(ActivityNotFoundException e) { status.setText("No speech recognition provider available"); }
  }
