@@ -18,6 +18,9 @@ import java.nio.ByteOrder
 import java.util.Locale
 
 class AvatarPreviewActivity : Activity() {
+    private val jawName = "Jaw_jnt_07"
+    private val jawClosedDegrees = -8f
+    private val jawOpenDegrees = 20f
     private var viewer: ModelViewer? = null
     private var ambient: IndirectLight? = null
     private var source: ByteBuffer? = null
@@ -65,7 +68,9 @@ class AvatarPreviewActivity : Activity() {
                         play.isEnabled = count > 0
                         stop.isEnabled = true
                         slider.isEnabled = true
-                        status.text = if (count > 0) "Ready. Select a clip and tap Play; drag to orbit, pinch to zoom." else "Ready. No embedded animation clips; manual joint tests remain available."
+                        applyJawOpenness(0f)
+                        v.animator?.updateBoneMatrices()
+                        status.text = if (count > 0) "Ready. Jaw resting at -8° local Y. Select a clip and tap Play; drag to orbit, pinch to zoom." else "Ready. Jaw resting at -8° local Y. No embedded animation clips; manual joint tests remain available."
                     }
                 }
             } catch (error: Exception) {
@@ -98,17 +103,21 @@ class AvatarPreviewActivity : Activity() {
         panel.addView(clips)
         val playback = LinearLayout(this)
         play = Button(this).apply { text = "Play"; isEnabled = false; setOnClickListener { togglePlayback() } }
-        stop = Button(this).apply { text = "Stop / original pose"; isEnabled = false; setOnClickListener { viewer?.let { loadModel(it) } } }
+        stop = Button(this).apply { text = "Stop / calibrated rest"; isEnabled = false; setOnClickListener { viewer?.let { loadModel(it) } } }
         playback.addView(play, LinearLayout.LayoutParams(0, -2, 1f))
         playback.addView(stop, LinearLayout.LayoutParams(0, -2, 1f))
         panel.addView(playback)
         joints = Spinner(this).apply { adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, jointNames) }
         panel.addView(joints)
-        axis = Spinner(this).apply { adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Local X axis", "Local Y axis", "Local Z axis")) }
+        axis = Spinner(this).apply { adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Local X axis", "Local Y axis", "Local Z axis")); setSelection(1) }
         panel.addView(axis)
-        panel.addView(TextView(this).apply { text = "Manual bone test: −20° to +20°. Axes are uncalibrated. Stop the clip first for a clean original pose." })
-        slider = SeekBar(this).apply { max = 40; progress = 20; isEnabled = false }
+        panel.addView(TextView(this).apply { text = "Manual bone test: −20° to +20° relative to original pose. Jaw calibration: local Y −8° closed, +20° open. Stop restores calibrated rest. Speech animation is not connected yet." })
+        slider = SeekBar(this).apply { max = 40; progress = 12; isEnabled = false }
         panel.addView(slider)
+        val jawControls = LinearLayout(this)
+        jawControls.addView(Button(this).apply { text = "Jaw closed (−8°)"; setOnClickListener { selectJawEndpoint(0f) } }, LinearLayout.LayoutParams(0, -2, 1f))
+        jawControls.addView(Button(this).apply { text = "Jaw open (+20°)"; setOnClickListener { selectJawEndpoint(1f) } }, LinearLayout.LayoutParams(0, -2, 1f))
+        panel.addView(jawControls)
         panel.addView(Button(this).apply { text = "Reset pose and camera"; setOnClickListener { viewer?.let { it.resetToDefaultState(); loadModel(it) } } })
         panel.addView(TextView(this).apply { text = "Model upload: JetteBoy / Sketchfab · CC-BY-4.0 label. Source and rights notes: AVATAR_PREVIEW.md."; textSize = 11f })
         root.addView(ScrollView(this).apply { addView(panel) }, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.34f).toInt()))
@@ -177,7 +186,9 @@ class AvatarPreviewActivity : Activity() {
         stop.isEnabled = false
         clips.isEnabled = false
         slider.isEnabled = false
-        slider.progress = 20
+        joints.setSelection(0)
+        axis.setSelection(1)
+        slider.progress = 12
         entities.clear()
         original.clear()
         try {
@@ -201,7 +212,7 @@ class AvatarPreviewActivity : Activity() {
             clips.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, if (labels.isEmpty()) listOf("No embedded animation clips") else labels)
             inspection.text = "$modelReport\nFilament clips: $count\n${labels.joinToString("\n")}\nTest joints found: ${entities.size}/${jointNames.size}\nMorph targets are not automatically classified as facial controls."
             loaded = true
-            status.text = "Geometry loaded; textures loading. Original model pose restored."
+            status.text = "Geometry loaded; textures loading. Calibrated jaw rest will apply when ready."
         } catch (error: Exception) { status.text = "Model load error: ${error.message}" }
     }
 
@@ -213,32 +224,61 @@ class AvatarPreviewActivity : Activity() {
         if (activeClip != index && activeClip >= 0) {
             loadModel(v)
             clips.setSelection(index)
-            status.text = "Original pose restored for clip change. Wait for loading, then tap Play."
+            status.text = "Calibrated rest restored for clip change. Wait for loading, then tap Play."
             return
         }
         if (activeClip != index) { activeClip = index; elapsed = 0.0 }
         playing = !playing
         lastFrame = 0L
         play.text = if (playing) "Pause" else "Play"
-        status.text = if (playing) "Looping clip ${index + 1}. Stop restores the original model pose." else "Animation paused at its current pose."
+        status.text = if (playing) "Looping clip ${index + 1}. Stop restores calibrated rest." else "Animation paused at its current pose."
+    }
+
+    private fun applyJointRotation(name: String, degrees: Float, axisIndex: Int): Boolean {
+        val v = viewer ?: return false
+        val entity = entities[name] ?: return false
+        val base = original[entity] ?: return false
+        val rotation = FloatArray(16)
+        val result = FloatArray(16)
+        Matrix.setRotateM(rotation, 0, degrees, if (axisIndex == 0) 1f else 0f, if (axisIndex == 1) 1f else 0f, if (axisIndex == 2) 1f else 0f)
+        Matrix.multiplyMM(result, 0, base, 0, rotation, 0)
+        v.engine.transformManager.let { it.setTransform(it.getInstance(entity), result) }
+        return true
+    }
+
+    private fun applyJawOpenness(openness: Float): Boolean {
+        if (!openness.isFinite()) return false
+        val degrees = jawClosedDegrees + (jawOpenDegrees - jawClosedDegrees) * openness.coerceIn(0f, 1f)
+        return applyJointRotation(jawName, degrees, 1)
+    }
+
+    private fun selectJawEndpoint(openness: Float) {
+        if (!readyReported) return
+        playing = false
+        lastFrame = 0L
+        play.text = "Play"
+        joints.setSelection(0)
+        axis.setSelection(1)
+        val degrees = if (openness == 0f) jawClosedDegrees else jawOpenDegrees
+        slider.progress = degrees.toInt() + 20
+        if (applyJawOpenness(openness)) {
+            viewer?.animator?.updateBoneMatrices()
+            status.text = "$jawName: $degrees degrees on local Y. Speech animation is not connected yet."
+        } else status.text = "Joint not available: $jawName"
     }
 
     private fun pose(degrees: Float) {
-        val v = viewer ?: return
         if (!readyReported) return
         playing = false
         lastFrame = 0L
         play.text = "Play"
         val name = joints.selectedItem as? String ?: return
-        val entity = entities[name] ?: run { status.text = "Joint not available: $name"; return }
-        val base = original[entity] ?: return
-        val rotation = FloatArray(16)
-        val result = FloatArray(16)
-        Matrix.setRotateM(rotation, 0, degrees, if (axis.selectedItemPosition == 0) 1f else 0f, if (axis.selectedItemPosition == 1) 1f else 0f, if (axis.selectedItemPosition == 2) 1f else 0f)
-        Matrix.multiplyMM(result, 0, base, 0, rotation, 0)
-        v.engine.transformManager.let { it.setTransform(it.getInstance(entity), result) }
-        v.animator?.updateBoneMatrices()
-        status.text = "$name: $degrees degrees. Playback paused; Stop restores the full original pose."
+        if (!applyJointRotation(name, degrees, axis.selectedItemPosition)) {
+            status.text = "Joint not available: $name"
+            return
+        }
+        viewer?.animator?.updateBoneMatrices()
+        status.text = "$name: $degrees degrees. Playback paused; Stop restores calibrated rest."
     }
 
     private fun inspectGlb(bytes: ByteArray): String {
