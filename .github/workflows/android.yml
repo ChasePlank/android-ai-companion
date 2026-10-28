@@ -90,8 +90,8 @@ jobs:
           keytool -exportcert -storetype JKS -keystore "$COMPANION_SIGNING_KEYSTORE" -storepass android -alias androiddebugkey -file "$RUNNER_TEMP/companion-cert.der"
           expected=$(sha256sum "$RUNNER_TEMP/companion-cert.der" | awk '{print $1}')
           "$apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
-          actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | tr -d ':\r ' | tr '[:upper:]' '[:lower:]')
-          count=$(grep -cE '^Signer #[0-9]+ certificate SHA-256 digest:' "$RUNNER_TEMP/apk-signature.txt" || true)
+          actual=$(sed -nE 's/^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | tr -d ':\r ' | tr '[:upper:]' '[:lower:]')
+          count=$(grep -cE '^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest:' "$RUNNER_TEMP/apk-signature.txt" || true)
           {
             echo '## Public signing diagnostics'
             echo "apksigner path: $apksigner"
