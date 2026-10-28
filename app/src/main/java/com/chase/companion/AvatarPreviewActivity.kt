@@ -111,8 +111,8 @@ class AvatarPreviewActivity : Activity() {
         panel.addView(joints)
         axis = Spinner(this).apply { adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Local X axis", "Local Y axis", "Local Z axis")); setSelection(1) }
         panel.addView(axis)
-        panel.addView(TextView(this).apply { text = "Manual bone test: −45° to +45° relative to original pose. Jaw calibration: local Y −8° closed, +20° open. Stop restores calibrated rest. Speech animation is not connected yet." })
-        slider = SeekBar(this).apply { max = 90; progress = 37; isEnabled = false }
+        panel.addView(TextView(this).apply { text = "Manual bone test: −90° to +90° relative to original pose. Jaw calibration: local Y −8° closed, +20° open. Stop restores calibrated rest. Speech animation is not connected yet." })
+        slider = SeekBar(this).apply { max = 180; progress = 82; isEnabled = false }
         panel.addView(slider)
         val jawControls = LinearLayout(this)
         jawControls.addView(Button(this).apply { text = "Jaw closed (−8°)"; setOnClickListener { selectJawEndpoint(0f) } }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -167,7 +167,7 @@ class AvatarPreviewActivity : Activity() {
             }, "read-roxanne-asset").start()
         } catch (error: Exception) { status.text = "Renderer setup error: ${error.message}" }
         slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) { if (fromUser) pose((value - 45).toFloat()) }
+            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) { if (fromUser) pose((value - 90).toFloat()) }
             override fun onStartTrackingTouch(bar: SeekBar) {}
             override fun onStopTrackingTouch(bar: SeekBar) {}
         })
@@ -188,7 +188,7 @@ class AvatarPreviewActivity : Activity() {
         slider.isEnabled = false
         joints.setSelection(0)
         axis.setSelection(1)
-        slider.progress = 37
+        slider.progress = 82
         entities.clear()
         original.clear()
         try {
@@ -260,7 +260,7 @@ class AvatarPreviewActivity : Activity() {
         joints.setSelection(0)
         axis.setSelection(1)
         val degrees = if (openness == 0f) jawClosedDegrees else jawOpenDegrees
-        slider.progress = degrees.toInt() + 45
+        slider.progress = degrees.toInt() + 90
         if (applyJawOpenness(openness)) {
             viewer?.animator?.updateBoneMatrices()
             status.text = "$jawName: $degrees degrees on local Y. Speech animation is not connected yet."
