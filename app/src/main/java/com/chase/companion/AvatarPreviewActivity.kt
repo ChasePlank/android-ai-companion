@@ -32,8 +32,12 @@ class AvatarPreviewActivity : Activity() {
     private lateinit var joints: Spinner
     private lateinit var axis: Spinner
     private lateinit var slider: SeekBar
+    private lateinit var angles: TextView
     private val entities = mutableMapOf<String, Int>()
     private val original = mutableMapOf<Int, FloatArray>()
+    private val offsets = mutableMapOf<Int, FloatArray>()
+    private val jointNames = mutableListOf<String>()
+    private var jawLabel: String? = null
     private var resumed = false
     private var closed = false
     private var loaded = false
@@ -43,7 +47,7 @@ class AvatarPreviewActivity : Activity() {
     private var elapsed = 0.0
     private var lastFrame = 0L
     private var modelReport = "Inspection pending"
-    private val jointNames = listOf("Jaw_jnt_07", "Head_jnt_06", "L_UpperEyelid_jnt_010", "L_LowerEyelid_jnt_011", "R_UpperEyelid_jnt_014", "R_LowerEyelid_jnt_015", "L_Eye_jnt_09", "R_Eye_jnt_013")
+    private val faceNames = listOf("Jaw_jnt_07", "Head_jnt_06", "L_UpperEyelid_jnt_010", "L_LowerEyelid_jnt_011", "R_UpperEyelid_jnt_014", "R_LowerEyelid_jnt_015", "L_Eye_jnt_09", "R_Eye_jnt_013")
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(time: Long) {
             if (!resumed || closed) return
@@ -67,10 +71,13 @@ class AvatarPreviewActivity : Activity() {
                         clips.isEnabled = count > 0
                         play.isEnabled = count > 0
                         stop.isEnabled = true
-                        slider.isEnabled = true
-                        applyJawOpenness(0f)
+                        slider.isEnabled = jointNames.isNotEmpty()
+                        joints.isEnabled = jointNames.isNotEmpty()
+                        axis.isEnabled = jointNames.isNotEmpty()
+                        val jawSet = applyJawOpenness(0f)
                         v.animator?.updateBoneMatrices()
-                        status.text = if (count > 0) "Ready. Jaw resting at -8° local Y. Select a clip and tap Play; drag to orbit, pinch to zoom." else "Ready. Jaw resting at -8° local Y. No embedded animation clips; manual joint tests remain available."
+                        syncControls()
+                        status.text = "Ready. ${jointNames.size} transform nodes. " + if (jawSet) "Jaw resting at -8° local Y. Drag to orbit; pinch to zoom." else "Jaw not found. Drag to orbit; pinch to zoom."
                     }
                 }
             } catch (error: Exception) {
@@ -87,7 +94,7 @@ class AvatarPreviewActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(16, 48, 16, 24) }
-        root.addView(TextView(this).apply { text = "Roxanne — animation inspection"; textSize = 22f })
+        root.addView(TextView(this).apply { text = "Roxanne — full rig inspection"; textSize = 22f })
         val navigation = LinearLayout(this)
         navigation.addView(Button(this).apply { text = "Qwen chat"; setOnClickListener { startActivity(Intent(this@AvatarPreviewActivity, LocalChatActivity::class.java)) } }, LinearLayout.LayoutParams(0, -2, 1f))
         navigation.addView(Button(this).apply { text = "Overlay controls"; setOnClickListener { startActivity(Intent(this@AvatarPreviewActivity, MainActivity::class.java)) } }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -107,13 +114,16 @@ class AvatarPreviewActivity : Activity() {
         playback.addView(play, LinearLayout.LayoutParams(0, -2, 1f))
         playback.addView(stop, LinearLayout.LayoutParams(0, -2, 1f))
         panel.addView(playback)
-        joints = Spinner(this).apply { adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, jointNames) }
+        joints = Spinner(this).apply { isEnabled = false; adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Loading transform nodes…")) }
         panel.addView(joints)
-        axis = Spinner(this).apply { adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Local X axis", "Local Y axis", "Local Z axis")); setSelection(1) }
+        axis = Spinner(this).apply { isEnabled = false; adapter = ArrayAdapter(this@AvatarPreviewActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Local X axis", "Local Y axis", "Local Z axis")); setSelection(1) }
         panel.addView(axis)
-        panel.addView(TextView(this).apply { text = "Manual bone test: −90° to +90° relative to original pose. Jaw calibration: local Y −8° closed, +20° open. Stop restores calibrated rest. Speech animation is not connected yet." })
-        slider = SeekBar(this).apply { max = 180; progress = 82; isEnabled = false }
+        panel.addView(TextView(this).apply { text = "All transform nodes are listed: bones, hair controls and possible mesh/group nodes. Names are not proof of function. Manual offsets: −90° to +90° per local axis; XYZ offsets combine relative to the original transform. Start small on untested nodes. Stop reloads the full rig." })
+        angles = TextView(this).apply { text = "Selected node: loading"; setTextIsSelectable(true) }
+        panel.addView(angles)
+        slider = SeekBar(this).apply { max = 180; progress = 90; isEnabled = false }
         panel.addView(slider)
+        panel.addView(Button(this).apply { text = "Reset selected node"; setOnClickListener { resetSelected() } })
         val jawControls = LinearLayout(this)
         jawControls.addView(Button(this).apply { text = "Jaw closed (−8°)"; setOnClickListener { selectJawEndpoint(0f) } }, LinearLayout.LayoutParams(0, -2, 1f))
         jawControls.addView(Button(this).apply { text = "Jaw open (+20°)"; setOnClickListener { selectJawEndpoint(1f) } }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -122,6 +132,12 @@ class AvatarPreviewActivity : Activity() {
         panel.addView(TextView(this).apply { text = "Model upload: JetteBoy / Sketchfab · CC-BY-4.0 label. Source and rights notes: AVATAR_PREVIEW.md."; textSize = 11f })
         root.addView(ScrollView(this).apply { addView(panel) }, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.34f).toInt()))
         setContentView(root)
+        val selectionListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { syncControls() }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        joints.onItemSelectedListener = selectionListener
+        axis.onItemSelectedListener = selectionListener
         surface.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: View) {}
             override fun onViewDetachedFromWindow(view: View) {
@@ -139,11 +155,7 @@ class AvatarPreviewActivity : Activity() {
             Utils.init()
             val v = ModelViewer(surface)
             viewer = v
-            v.renderer.clearOptions = Renderer.ClearOptions().apply {
-                clear = true
-                discard = true
-                clearColor = doubleArrayOf(0.0, 0.0, 0.0, 1.0)
-            }
+            v.renderer.clearOptions = Renderer.ClearOptions().apply { clear = true; discard = true; clearColor = doubleArrayOf(0.0, 0.0, 0.0, 1.0) }
             v.autoPlayAnimations = false
             surface.setOnTouchListener(v)
             val lights = v.engine.lightManager
@@ -156,13 +168,7 @@ class AvatarPreviewActivity : Activity() {
                     val report = runCatching { inspectGlb(bytes) }.getOrElse { "GLB inspection unavailable: ${it.message}" }
                     val buffer = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder())
                     buffer.put(bytes).flip()
-                    runOnUiThread {
-                        if (!closed && viewer === v) {
-                            source = buffer
-                            modelReport = report
-                            loadModel(v)
-                        }
-                    }
+                    runOnUiThread { if (!closed && viewer === v) { source = buffer; modelReport = report; loadModel(v) } }
                 } catch (error: Exception) { runOnUiThread { if (!closed) status.text = "Asset read error: ${error.message}" } }
             }, "read-roxanne-asset").start()
         } catch (error: Exception) { status.text = "Renderer setup error: ${error.message}" }
@@ -175,34 +181,29 @@ class AvatarPreviewActivity : Activity() {
 
     private fun loadModel(v: ModelViewer) {
         val buffer = source ?: return
-        playing = false
-        activeClip = -1
-        elapsed = 0.0
-        lastFrame = 0L
-        loaded = false
-        readyReported = false
-        play.text = "Play"
-        play.isEnabled = false
-        stop.isEnabled = false
-        clips.isEnabled = false
-        slider.isEnabled = false
-        joints.setSelection(0)
-        axis.setSelection(1)
-        slider.progress = 82
-        entities.clear()
-        original.clear()
+        playing = false; activeClip = -1; elapsed = 0.0; lastFrame = 0L; loaded = false; readyReported = false
+        play.text = "Play"; play.isEnabled = false; stop.isEnabled = false; clips.isEnabled = false
+        slider.isEnabled = false; joints.isEnabled = false; axis.isEnabled = false
+        entities.clear(); original.clear(); offsets.clear(); jointNames.clear(); jawLabel = null
+        slider.progress = 90
         try {
             v.loadModelGlb(buffer.duplicate().apply { rewind() })
             val asset = v.asset ?: error("Filament could not load the GLB")
             v.transformToUnitCube()
             val tm = v.engine.transformManager
-            for (entity in asset.entities) {
-                val name = asset.getName(entity) ?: continue
-                if (name in jointNames && tm.getInstance(entity) != 0) {
-                    entities[name] = entity
-                    original[entity] = FloatArray(16).also { tm.getTransform(tm.getInstance(entity), it) }
-                }
+            val records = asset.entities.mapNotNull { entity ->
+                if (tm.getInstance(entity) == 0) null else Pair(entity, asset.getName(entity)?.takeIf { it.isNotBlank() } ?: "Unnamed node")
+            }.sortedWith(compareBy<Pair<Int, String>> { if (it.second in faceNames) 0 else 1 }.thenBy { it.second.lowercase(Locale.ROOT) }.thenBy { it.first })
+            for ((entity, name) in records) {
+                val label = "$name [entity $entity]"
+                jointNames.add(label); entities[label] = entity
+                original[entity] = FloatArray(16).also { tm.getTransform(tm.getInstance(entity), it) }
+                offsets[entity] = floatArrayOf(0f, 0f, 0f)
+                if (name == jawName && jawLabel == null) jawLabel = label
             }
+            joints.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, if (jointNames.isEmpty()) listOf("No transform nodes found") else jointNames.toList())
+            joints.setSelection(jointNames.indexOf(jawLabel).coerceAtLeast(0))
+            axis.setSelection(1)
             val animator = v.animator
             val count = animator?.animationCount ?: 0
             val labels = (0 until count).map { index ->
@@ -210,9 +211,9 @@ class AvatarPreviewActivity : Activity() {
                 "${index + 1}. $name — ${String.format(Locale.US, "%.2f", animator.getAnimationDuration(index))} s"
             }
             clips.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, if (labels.isEmpty()) listOf("No embedded animation clips") else labels)
-            inspection.text = "$modelReport\nFilament clips: $count\n${labels.joinToString("\n")}\nTest joints found: ${entities.size}/${jointNames.size}\nMorph targets are not automatically classified as facial controls."
+            inspection.text = "$modelReport\nFilament clips: $count\n${labels.joinToString("\n")}\nSelectable transform nodes: ${jointNames.size} (includes non-bone nodes).\nMorph targets are not automatically classified as facial controls."
             loaded = true
-            status.text = "Geometry loaded; textures loading. Calibrated jaw rest will apply when ready."
+            status.text = "Geometry loaded; textures loading. Full-rig controls will enable when ready."
         } catch (error: Exception) { status.text = "Model load error: ${error.message}" }
     }
 
@@ -222,25 +223,26 @@ class AvatarPreviewActivity : Activity() {
         val index = clips.selectedItemPosition
         if (!readyReported || index !in 0 until animator.animationCount) return
         if (activeClip != index && activeClip >= 0) {
-            loadModel(v)
-            clips.setSelection(index)
+            loadModel(v); clips.setSelection(index)
             status.text = "Calibrated rest restored for clip change. Wait for loading, then tap Play."
             return
         }
         if (activeClip != index) { activeClip = index; elapsed = 0.0 }
-        playing = !playing
-        lastFrame = 0L
-        play.text = if (playing) "Pause" else "Play"
-        status.text = if (playing) "Looping clip ${index + 1}. Stop restores calibrated rest." else "Animation paused at its current pose."
+        playing = !playing; lastFrame = 0L; play.text = if (playing) "Pause" else "Play"
+        status.text = if (playing) "Looping clip ${index + 1}. Manual offsets may be overwritten by the clip. Stop restores calibrated rest." else "Animation paused. Stop before clean manual calibration."
     }
 
-    private fun applyJointRotation(name: String, degrees: Float, axisIndex: Int): Boolean {
+    private fun applyNode(label: String): Boolean {
         val v = viewer ?: return false
-        val entity = entities[name] ?: return false
+        val entity = entities[label] ?: return false
         val base = original[entity] ?: return false
+        val xyz = offsets[entity] ?: return false
         val rotation = FloatArray(16)
         val result = FloatArray(16)
-        Matrix.setRotateM(rotation, 0, degrees, if (axisIndex == 0) 1f else 0f, if (axisIndex == 1) 1f else 0f, if (axisIndex == 2) 1f else 0f)
+        Matrix.setIdentityM(rotation, 0)
+        Matrix.rotateM(rotation, 0, xyz[0], 1f, 0f, 0f)
+        Matrix.rotateM(rotation, 0, xyz[1], 0f, 1f, 0f)
+        Matrix.rotateM(rotation, 0, xyz[2], 0f, 0f, 1f)
         Matrix.multiplyMM(result, 0, base, 0, rotation, 0)
         v.engine.transformManager.let { it.setTransform(it.getInstance(entity), result) }
         return true
@@ -248,37 +250,56 @@ class AvatarPreviewActivity : Activity() {
 
     private fun applyJawOpenness(openness: Float): Boolean {
         if (!openness.isFinite()) return false
-        val degrees = jawClosedDegrees + (jawOpenDegrees - jawClosedDegrees) * openness.coerceIn(0f, 1f)
-        return applyJointRotation(jawName, degrees, 1)
+        val label = jawLabel ?: return false
+        val entity = entities[label] ?: return false
+        offsets[entity] = floatArrayOf(0f, jawClosedDegrees + (jawOpenDegrees - jawClosedDegrees) * openness.coerceIn(0f, 1f), 0f)
+        return applyNode(label)
     }
+
+    private fun pausePlayback() { playing = false; lastFrame = 0L; play.text = "Play" }
 
     private fun selectJawEndpoint(openness: Float) {
         if (!readyReported) return
-        playing = false
-        lastFrame = 0L
-        play.text = "Play"
-        joints.setSelection(0)
-        axis.setSelection(1)
-        val degrees = if (openness == 0f) jawClosedDegrees else jawOpenDegrees
-        slider.progress = degrees.toInt() + 90
+        pausePlayback()
+        val label = jawLabel ?: run { status.text = "Joint not available: $jawName"; return }
+        joints.setSelection(jointNames.indexOf(label).coerceAtLeast(0)); axis.setSelection(1)
         if (applyJawOpenness(openness)) {
-            viewer?.animator?.updateBoneMatrices()
-            status.text = "$jawName: $degrees degrees on local Y. Speech animation is not connected yet."
-        } else status.text = "Joint not available: $jawName"
+            viewer?.animator?.updateBoneMatrices(); syncControls()
+            status.text = "Jaw: ${if (openness == 0f) jawClosedDegrees else jawOpenDegrees} degrees on local Y."
+        }
+    }
+
+    private fun syncControls() {
+        if (!::slider.isInitialized || !::angles.isInitialized || !::axis.isInitialized) return
+        val label = joints.selectedItem as? String
+        val entity = entities[label]
+        val xyz = offsets[entity]
+        if (xyz == null) { slider.progress = 90; angles.text = "No node selected"; return }
+        val selectedAxis = axis.selectedItemPosition.coerceIn(0, 2)
+        slider.progress = xyz[selectedAxis].toInt() + 90
+        angles.text = "$label\nManual offsets: X ${xyz[0]}° · Y ${xyz[1]}° · Z ${xyz[2]}°\nSelected axis: ${listOf("X", "Y", "Z")[selectedAxis]} = ${xyz[selectedAxis]}°"
     }
 
     private fun pose(degrees: Float) {
         if (!readyReported) return
-        playing = false
-        lastFrame = 0L
-        play.text = "Play"
-        val name = joints.selectedItem as? String ?: return
-        if (!applyJointRotation(name, degrees, axis.selectedItemPosition)) {
-            status.text = "Joint not available: $name"
-            return
+        pausePlayback()
+        val label = joints.selectedItem as? String ?: return
+        val entity = entities[label] ?: return
+        val xyz = offsets[entity] ?: return
+        xyz[axis.selectedItemPosition.coerceIn(0, 2)] = degrees.coerceIn(-90f, 90f)
+        if (applyNode(label)) {
+            viewer?.animator?.updateBoneMatrices(); syncControls()
+            status.text = "Manual node pose applied. Stop restores the full rig; Reset selected affects this node only."
         }
-        viewer?.animator?.updateBoneMatrices()
-        status.text = "$name: $degrees degrees. Playback paused; Stop restores calibrated rest."
+    }
+
+    private fun resetSelected() {
+        if (!readyReported) return
+        pausePlayback()
+        val label = joints.selectedItem as? String ?: return
+        val entity = entities[label] ?: return
+        offsets[entity] = if (label == jawLabel) floatArrayOf(0f, jawClosedDegrees, 0f) else floatArrayOf(0f, 0f, 0f)
+        if (applyNode(label)) { viewer?.animator?.updateBoneMatrices(); syncControls(); status.text = "Selected node reset; other manual offsets preserved." }
     }
 
     private fun inspectGlb(bytes: ByteArray): String {
