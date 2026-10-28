@@ -27,6 +27,7 @@ import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.tan
@@ -60,6 +61,10 @@ object FloatingAvatarOverlay {
     private class Session(private val context: Context) {
         private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         private val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        private val framing = context.getSharedPreferences("overlay_framing", Context.MODE_PRIVATE)
+        private var verticalStep = framing.getInt("vertical_step", 0).coerceIn(-18, 18)
+        private var zoomStep = framing.getInt("zoom_step", 0).coerceIn(-4, 10)
+        private val zoom get() = 1.0 + zoomStep * 0.1
         private val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         private val texture = TextureView(context).apply { isOpaque = false }
         private val label = TextView(context).apply {
@@ -80,7 +85,7 @@ object FloatingAvatarOverlay {
         private val metrics get() = context.resources.displayMetrics
         private fun dp(value: Int) = (value * metrics.density).roundToInt()
         private val width = minOf(dp(240), metrics.widthPixels)
-        private val height = minOf(dp(340), metrics.heightPixels)
+        private val height = minOf(dp(436), metrics.heightPixels)
         private val position = WindowManager.LayoutParams(
             width, height, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
@@ -135,6 +140,45 @@ object FloatingAvatarOverlay {
             }
         }
 
+        private fun framingControls(): LinearLayout {
+            val panel = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(0xcc20242c.toInt())
+            }
+            val zoomLabel = TextView(context).apply {
+                gravity = Gravity.CENTER
+                setTextColor(0xffffffff.toInt())
+                textSize = 14f
+            }
+            fun refresh() {
+                zoomLabel.text = String.format(Locale.US, "%.1f×", zoom)
+                zoomLabel.contentDescription = String.format(Locale.US, "Zoom %.1f times; avatar vertical offset %d steps", zoom, verticalStep)
+            }
+            fun save() {
+                framing.edit().putInt("vertical_step", verticalStep).putInt("zoom_step", zoomStep).apply()
+                refresh()
+            }
+            fun button(text: String, description: String, action: () -> Unit) = Button(context).apply {
+                this.text = text
+                contentDescription = description
+                minWidth = 0
+                setPadding(0, 0, 0, 0)
+                setOnClickListener { if (!closed) { action(); save() } }
+            }
+            val vertical = LinearLayout(context)
+            vertical.addView(button("↑", "Move avatar up within the frame") { verticalStep = (verticalStep + 1).coerceAtMost(18) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            vertical.addView(button("↓", "Move avatar down within the frame") { verticalStep = (verticalStep - 1).coerceAtLeast(-18) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            vertical.addView(button("Reset", "Reset vertical framing and zoom") { verticalStep = 0; zoomStep = 0 }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            val magnification = LinearLayout(context)
+            magnification.addView(button("−", "Zoom out") { zoomStep = (zoomStep - 1).coerceAtLeast(-4) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            magnification.addView(zoomLabel, LinearLayout.LayoutParams(0, dp(48), 1f))
+            magnification.addView(button("+", "Zoom in") { zoomStep = (zoomStep + 1).coerceAtMost(10) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            panel.addView(vertical, LinearLayout.LayoutParams(-1, dp(48)))
+            panel.addView(magnification, LinearLayout.LayoutParams(-1, dp(48)))
+            refresh()
+            return panel
+        }
+
         fun show() {
             val bar = LinearLayout(context).apply { setBackgroundColor(0xcc20242c.toInt()); gravity = Gravity.CENTER_VERTICAL }
             bar.addView(label, LinearLayout.LayoutParams(0, dp(40), 1f))
@@ -148,6 +192,7 @@ object FloatingAvatarOverlay {
                 clipChildren = true
                 addView(texture, FrameLayout.LayoutParams(-1, -1))
             }, LinearLayout.LayoutParams(-1, 0, 1f))
+            root.addView(framingControls(), LinearLayout.LayoutParams(-1, dp(96)))
             label.setOnTouchListener(object : View.OnTouchListener {
                 private var startX = 0f; private var startY = 0f
                 private var oldX = 0; private var oldY = 0
@@ -228,12 +273,12 @@ object FloatingAvatarOverlay {
 
         private fun frameCamera(v: ModelViewer) {
             val aspect = texture.width.toDouble() / texture.height.toDouble()
-            // Initial chest-up crop from normalized full-model bounds; phone tuning pending.
-            val targetY = normalizedHeight * 0.31
+            // Positive steps move the avatar up by lowering both camera and target.
+            val targetY = normalizedHeight * (0.31 - verticalStep * 0.025)
             val halfHeight = normalizedHeight * 0.24
             val halfWidth = normalizedHeight * 0.25
             val tangent = tan(Math.toRadians(35.0 / 2.0))
-            val distance = max(halfHeight / tangent, halfWidth / (aspect * tangent)) * 1.08
+            val distance = max(halfHeight / tangent, halfWidth / (aspect * tangent)) * 1.08 / zoom
             v.camera.setProjection(35.0, aspect, 0.05, 1000.0, Camera.Fov.VERTICAL)
             v.camera.lookAt(0.0, targetY, -4.0 + distance, 0.0, targetY, -4.0, 0.0, 1.0, 0.0)
         }
