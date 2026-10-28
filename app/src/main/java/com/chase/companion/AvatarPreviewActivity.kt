@@ -25,6 +25,9 @@ class AvatarPreviewActivity : Activity() {
     private val jawClosedDegrees = -8f
     private val jawOpenDegrees = 20f
     private var viewer: ModelViewer? = null
+    private var keytarEntity: Int? = null
+    private var keytarVisible = false
+    private lateinit var keytarButton: Button
     private var cameraControls: Manipulator? = null
     private var centerNote = "Upper-torso focus pending."
     private var ambient: IndirectLight? = null
@@ -80,11 +83,13 @@ class AvatarPreviewActivity : Activity() {
                         play.isEnabled = count > 0
                         stop.isEnabled = true
                         search.isEnabled = true
+                        keytarButton.isEnabled = applyKeytarVisibility(v)
                         updateNodeFilter()
                         val jawSet = applyJawOpenness(0f)
                         v.animator?.updateBoneMatrices()
                         syncControls()
-                        status.text = "Ready. ${jointNames.size} transform nodes. $centerNote " + if (jawSet) "Jaw resting at -8° local Y. Drag: orbit; two fingers: pan; pinch: zoom." else "Jaw not found. Drag: orbit; two fingers: pan; pinch: zoom."
+                        val keytarNote = if (keytarEntity == null) "Keytar mesh unavailable; visibility unchanged." else if (keytarVisible) "Keytar shown." else "Keytar hidden."
+                        status.text = "Ready. ${jointNames.size} transform nodes. $centerNote $keytarNote " + if (jawSet) "Jaw resting at -8° local Y. Drag: orbit; two fingers: pan; pinch: zoom." else "Jaw not found. Drag: orbit; two fingers: pan; pinch: zoom."
                     }
                 }
             } catch (error: Exception) {
@@ -100,6 +105,7 @@ class AvatarPreviewActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        keytarVisible = getSharedPreferences("preview_options", MODE_PRIVATE).getBoolean("keytar_visible", false)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(16, 48, 16, 24) }
         root.addView(TextView(this).apply { text = "Roxanne — full rig inspection"; textSize = 22f })
         val navigation = LinearLayout(this)
@@ -111,6 +117,29 @@ class AvatarPreviewActivity : Activity() {
         val surface = SurfaceView(this)
         root.addView(surface, LinearLayout.LayoutParams(-1, 0, 1f))
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val diagnostics = LinearLayout(this)
+        diagnostics.addView(Button(this).apply { text = "Voice test"; setOnClickListener { startActivity(Intent(this@AvatarPreviewActivity, VoiceTestActivity::class.java)) } }, LinearLayout.LayoutParams(0, -2, 1f))
+        diagnostics.addView(Button(this).apply { text = "Keytar inspector"; setOnClickListener { startActivity(Intent(this@AvatarPreviewActivity, KeytarInspectionActivity::class.java)) } }, LinearLayout.LayoutParams(0, -2, 1f))
+        panel.addView(diagnostics)
+        keytarButton = Button(this).apply {
+            text = if (keytarVisible) "Hide keytar" else "Show keytar"
+            isEnabled = false
+            setOnClickListener {
+                val v = viewer
+                if (v != null && readyReported && !closed) {
+                    keytarVisible = !keytarVisible
+                    if (applyKeytarVisibility(v)) {
+                        getSharedPreferences("preview_options", MODE_PRIVATE).edit().putBoolean("keytar_visible", keytarVisible).apply()
+                        status.text = if (keytarVisible) "Keytar shown. Poses and camera unchanged." else "Keytar hidden. Poses and camera unchanged."
+                    } else {
+                        keytarVisible = !keytarVisible
+                        isEnabled = false
+                        status.text = "Keytar renderable unavailable; nothing else was hidden."
+                    }
+                }
+            }
+        }
+        panel.addView(keytarButton)
         panel.addView(Button(this).apply {
             text = "Recenter view (keep pose)"
             setOnClickListener {
@@ -178,6 +207,8 @@ class AvatarPreviewActivity : Activity() {
                 viewer?.let { v -> v.scene.indirectLight = null; ambient?.let { v.engine.destroyIndirectLight(it) } }
                 ambient = null
                 viewer = null
+                keytarEntity = null
+                keytarButton.isEnabled = false
                 cameraControls = null
                 source = null
                 // ModelViewer's later detach listener owns engine/resource destruction.
@@ -215,6 +246,33 @@ class AvatarPreviewActivity : Activity() {
             override fun onStartTrackingTouch(bar: SeekBar) {}
             override fun onStopTrackingTouch(bar: SeekBar) {}
         })
+    }
+
+    private fun bindKeytar(v: ModelViewer) {
+        keytarEntity = null
+        val asset = v.asset ?: return
+        val rm = v.engine.renderableManager
+        var matches = 0
+        for (entity in asset.entities) {
+            if (asset.getName(entity) == "Object_115" && rm.getInstance(entity) != 0) {
+                keytarEntity = entity
+                matches++
+            }
+        }
+        if (matches != 1 || asset.entities.none { asset.getName(it) == "World_Prop_jnt_073" }) keytarEntity = null
+        applyKeytarVisibility(v)
+    }
+
+    private fun applyKeytarVisibility(v: ModelViewer): Boolean {
+        val entity = keytarEntity ?: return false
+        val rm = v.engine.renderableManager
+        val instance = rm.getInstance(entity)
+        if (instance == 0) return false
+        // Inspector verified Object_115 is a separate keytar-only renderable.
+        // glTF renderables use layer 0 (mask 1); hiding changes no transforms or geometry.
+        rm.setLayerMask(instance, 0xff, if (keytarVisible) 1 else 0)
+        keytarButton.text = if (keytarVisible) "Hide keytar" else "Show keytar"
+        return true
     }
 
     private fun centerUpperTorso(v: ModelViewer): String {
@@ -262,6 +320,7 @@ class AvatarPreviewActivity : Activity() {
     private fun loadModel(v: ModelViewer) {
         val buffer = source ?: return
         playing = false; activeClip = -1; elapsed = 0.0; lastFrame = 0L; loaded = false; readyReported = false
+        keytarEntity = null; keytarButton.isEnabled = false
         play.text = "Play"; play.isEnabled = false; stop.isEnabled = false; clips.isEnabled = false
         slider.isEnabled = false; joints.isEnabled = false; axis.isEnabled = false; search.isEnabled = false
         entities.clear(); original.clear(); offsets.clear(); jointNames.clear(); visibleJointNames.clear(); jawLabel = null
@@ -270,6 +329,7 @@ class AvatarPreviewActivity : Activity() {
         try {
             v.loadModelGlb(buffer.duplicate().apply { rewind() })
             val asset = v.asset ?: error("Filament could not load the GLB")
+            bindKeytar(v)
             v.transformToUnitCube()
             centerNote = centerUpperTorso(v)
             val tm = v.engine.transformManager

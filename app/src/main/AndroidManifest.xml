@@ -6,7 +6,7 @@
  <activity android:name=".MainActivity" android:exported="false"/>
  <activity android:name=".LocalChatActivity" android:exported="false"/>
  <activity android:name=".AvatarPreviewActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
- <activity android:name=".VoiceTestActivity" android:label="Roxy Voice Test" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
- <activity android:name=".KeytarInspectionActivity" android:label="Keytar inspector" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+ <activity android:name=".VoiceTestActivity" android:label="Roxy Voice Test" android:exported="false"/>
+ <activity android:name=".KeytarInspectionActivity" android:label="Keytar inspector" android:exported="false"/>
  </application>
 </manifest>
