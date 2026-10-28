@@ -2,10 +2,29 @@ plugins { id 'com.android.application' }
 def ciRunNumber = System.getenv('GITHUB_RUN_NUMBER')
 def diagnosticVersionCode = ciRunNumber ? 4 + ciRunNumber.toInteger() : 4
 def diagnosticVersionName = ciRunNumber ? "0.4-avatar-preview.build-${ciRunNumber}" : '0.4-avatar-preview-local'
+def persistentKeystore = System.getenv('COMPANION_SIGNING_KEYSTORE')
+if (System.getenv('GITHUB_ACTIONS') == 'true' && !persistentKeystore) {
+ throw new GradleException('COMPANION_SIGNING_KEYSTORE is required in CI')
+}
+if (persistentKeystore && !file(persistentKeystore).isFile()) {
+ throw new GradleException('Persistent diagnostic keystore does not exist')
+}
 android {
  namespace 'com.chase.companion'
  compileSdk 36
  defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode diagnosticVersionCode; versionName diagnosticVersionName }
+ signingConfigs {
+  debug {
+   if (persistentKeystore) {
+    storeFile file(persistentKeystore)
+    storePassword 'android'
+    keyAlias 'androiddebugkey'
+    keyPassword 'android'
+    storeType 'JKS'
+   }
+  }
+ }
+ buildTypes { debug { signingConfig signingConfigs.debug } }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
  sourceSets { main { assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets').get().asFile) } }
 }
