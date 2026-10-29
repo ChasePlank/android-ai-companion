@@ -1,0 +1,28 @@
+name: Inspect Roxy voice archive
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-roxy-voice.yml'
+      - 'tools/inspect_roxy_voice.py'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Download, hash and statically inspect candidate archive
+        run: python3 tools/inspect_roxy_voice.py
+      - name: Save small inspection report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-voice-inspection
+          path: voice-inspection.json
+          if-no-files-found: warn
+          retention-days: 7
