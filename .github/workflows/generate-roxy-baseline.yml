@@ -1,0 +1,56 @@
+name: Generate Roxy neural baseline
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/generate-roxy-baseline.yml'
+      - 'tools/generate_roxy_baseline.py'
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Initialize baseline report
+        run: python tools/generate_roxy_baseline.py --initialize
+      - name: Install standalone neural TTS dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: piper-tts
+          python -m pip freeze > voice-baseline/python-packages.txt
+      - name: Generate native unconverted baseline WAV
+        run: python tools/generate_roxy_baseline.py
+      - name: Upload small baseline report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-baseline-report
+          path: |
+            voice-baseline/baseline-report.txt
+            voice-baseline/baseline-report.json
+            voice-baseline/python-packages.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload baseline for human listening review
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-neural-baseline
+          path: |
+            voice-baseline/baseline.wav
+            voice-baseline/baseline-manifest.json
+            voice-baseline/sentence.txt
+            voice-baseline/VOICE_MODEL_CARD.txt
+          if-no-files-found: error
+          retention-days: 7
