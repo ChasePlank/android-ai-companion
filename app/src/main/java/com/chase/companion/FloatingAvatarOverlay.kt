@@ -67,7 +67,8 @@ object FloatingAvatarOverlay {
         private val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         private val metrics get() = context.resources.displayMetrics
         private fun dp(value: Int) = (value * metrics.density).roundToInt()
-        private val width = minOf(dp(120), metrics.widthPixels)
+        private val framingWidth = minOf(dp(120), metrics.widthPixels)
+        private val width = minOf(dp(150), metrics.widthPixels)
         private val height = minOf(dp(242), metrics.heightPixels)
         private val position = WindowManager.LayoutParams(width, height, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, PixelFormat.TRANSLUCENT).apply {
@@ -311,10 +312,12 @@ object FloatingAvatarOverlay {
             val viewport = v.view.viewport
             if (viewport.width != w || viewport.height != h) v.view.viewport = Viewport(0, 0, w, h)
             val aspect = w.toDouble() / h.toDouble()
+            // Keep the approved 120-dp framing scale; extra width reveals more at the sides.
+            val framingAspect = aspect * framingWidth.toDouble() / width.toDouble()
             val tangent = tan(Math.toRadians(35.0 / 2.0))
             val halfHeight = normalizedHeight * if (chest) 0.20 else 0.5
             val halfWidth = if (chest) normalizedHeight * 0.14 else normalizedWidth * 0.5
-            val baseDistance = max(halfHeight / tangent, halfWidth / (aspect * tangent)) * (if (chest) 1.08 else 1.15) + normalizedDepth * 0.5
+            val baseDistance = max(halfHeight / tangent, halfWidth / (framingAspect * tangent)) * (if (chest) 1.08 else 1.15) + normalizedDepth * 0.5
             // Scale the entire distance: no unscaled depth offset that defeats close zoom.
             val distance = (baseDistance / if (chest) zoom else 1.0).coerceAtLeast(0.2)
             val anchor = if (chest) neck else spine
@@ -341,7 +344,7 @@ object FloatingAvatarOverlay {
             var components = 0
             v?.asset?.let { asset -> for (entity in asset.entities) if (v.engine.renderableManager.getInstance(entity) != 0) components++ }
             val boundsReport = v?.let { renderableBoundsReport(it) } ?: "Renderer unavailable\n"
-            return "OVERLAY DIAGNOSTICS v4\nAvatar-only window=120 x 242 dp\nRenderer target=SurfaceView; transparent surface; on-top stacking\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (chest) "chest / neck" else "Fit / spine"}\nSpine anchor=$spine\nNeck anchor=$neck\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\n$cameraNote\nChest zoom=$zoom; horizontalStep=$horizontalStep; verticalStep=$verticalStep\nIdle=$idleEnabled; diagnostic background=$debugBackground\n$boundsReport\nDrag anywhere; hold still to remove. Settings are in the app.\n"
+            return "OVERLAY DIAGNOSTICS v4\nAvatar-only window=150 x 242 dp\nRenderer target=SurfaceView; transparent surface; on-top stacking\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (chest) "chest / neck" else "Fit / spine"}\nSpine anchor=$spine\nNeck anchor=$neck\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\n$cameraNote\nChest zoom=$zoom; horizontalStep=$horizontalStep; verticalStep=$verticalStep\nIdle=$idleEnabled; diagnostic background=$debugBackground\n$boundsReport\nDrag anywhere; hold still to remove. Settings are in the app.\n"
         }
 
         private fun applyRestingJaw(v: ModelViewer): Boolean {

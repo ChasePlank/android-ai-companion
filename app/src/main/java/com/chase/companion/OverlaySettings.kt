@@ -33,7 +33,7 @@ object OverlaySettings {
         val p = preferences(activity)
         val panel = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 12, 24, 12) }
         val summary = TextView(activity)
-        panel.addView(TextView(activity).apply { text = "Avatar-only overlay: 120 × 242 dp. Drag anywhere in its window; hold still to remove. Changes below apply immediately and are saved. Fit centers on the spine; Chest centers on the neck." })
+        panel.addView(TextView(activity).apply { text = "Avatar-only overlay: 150 × 242 dp. Drag anywhere in its window; hold still to remove. Changes below apply immediately and are saved. Fit centers on the spine; Chest centers on the neck." })
         panel.addView(summary)
         fun refresh() {
             val mode = if (p.getBoolean("chest", true)) "Chest / neck" else "Fit / spine"
