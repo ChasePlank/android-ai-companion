@@ -19,8 +19,7 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          model = Path('Roxanne_Wolf_Toggle_fix.glb')
-          assert model.is_file(), 'Fixed toggle GLB missing'
+          assert Path('Roxanne_Wolf_Toggle_fix.glb').is_file(), 'Fixed toggle GLB missing'
           gradle = Path('app/build.gradle')
           text = gradle.read_text()
           anchor = "from(rootProject.file('roxanne_wolf_security_breach.glb'))"
@@ -35,19 +34,23 @@ jobs:
               'val jawSet = applyJawOpenness(0f)': 'val jawSet = false',
               'keytarButton.isEnabled = applyKeytarVisibility(v)': 'keytarButton.isEnabled = false',
               '            bindKeytar(v)': '            keytarEntity = null // No original-model visibility assumptions',
-              'Roxanne — full rig inspection': 'Alongside — fixed model node test',
+              'centerNote = centerUpperTorso(v)': 'centerNote = "Whole-model bounds framing; head-based recentering disabled."',
+              'inspection.text = "$modelReport': 'inspection.text = "Renderable entities: ${asset.entities.count { v.engine.renderableManager.getInstance(it) != 0 }}\nBounds center: ${asset.boundingBox.center.joinToString()}\nBounds half extents: ${asset.boundingBox.halfExtent.joinToString()}\n$modelReport',
+              'Ready. ${jointNames.size} transform nodes.': 'Loaded (visibility not verified). ${jointNames.size} transform nodes.',
+              'Roxanne — full rig inspection': 'Alongside — fixed model framing test',
               'Loading bundled Roxanne model…': 'Loading fixed toggle model for node testing…',
               'Shoulders rest at -72° X; TailB at -90° X. ': 'Exported rest pose; original rig calibration disabled. ',
               'Jaw not found. Drag: orbit; two fingers: pan; pinch: zoom.': 'Automatic jaw pose disabled. No skin was found in the uploaded inspection; nodes may not deform the mesh. Drag: orbit; two fingers: pan; pinch: zoom.',
               'Stop / calibrated rest': 'Stop / exported rest',
               'calibrated rest': 'exported rest',
-              'Calibrated rest': 'Exported rest'
+              'Calibrated rest': 'Exported rest',
+              'Upper-torso pivot is estimated below the head joint and needs visual checking.': 'Whole-model bounds framing is used; head-based centering is disabled.'
           }
           for old, new in changes.items():
               assert old in text, 'Preview source changed; missing: ' + old
               text = text.replace(old, new)
           activity.write_text(text)
-          print('Fixed model is preview-only. Original overlay asset retained. No source patches are committed by this job.')
+          print('Fixed preview: whole-model framing, exported rest, bounds and renderable diagnostics. Original overlay retained.')
       - name: Restore persistent diagnostic signing key
         shell: bash
         env:
@@ -96,15 +99,15 @@ jobs:
           cat "$RUNNER_TEMP/apk-signature.txt"
           test "$count" = 1 && test "$actual" = "$expected" || { echo '::error::Signing mismatch; upload blocked.'; exit 1; }
           {
-            echo '## Fixed-toggle node-test APK'
-            echo 'Preview: Roxanne_Wolf_Toggle_fix.glb; exported rest pose; manual XYZ node controls.'
-            echo 'Original overlay and its model retained. No skin repair or deformation compatibility claimed.'
+            echo '## Fixed-toggle framing-test APK'
+            echo 'Preview: Roxanne_Wolf_Toggle_fix.glb; whole-model framing; exported rest; renderable and bounds diagnostics.'
+            echo 'Original overlay retained. Visibility and skin deformation are not verified by loading success.'
             echo "Certificate SHA-256: $actual"
             echo "APK SHA-256: $(sha256sum "$apk" | awk '{print $1}')"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
-          name: companion-fixed-node-test-debug-${{ github.run_number }}
+          name: companion-fixed-framing-test-debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Remove runner signing key
