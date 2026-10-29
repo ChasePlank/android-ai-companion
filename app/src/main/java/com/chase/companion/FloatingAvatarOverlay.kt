@@ -7,7 +7,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.Choreographer
 import android.view.Display
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -35,7 +34,8 @@ import kotlin.math.tan
 
 /** Process-scoped avatar-only overlay; settings live in the app. */
 object FloatingAvatarOverlay {
-    private val main = Handler(Looper.getMainLooper())
+    // Same main thread as Filament, but not held behind view synchronization barriers.
+    private val main = Handler.createAsync(Looper.getMainLooper())
     private var session: Session? = null
 
     @JvmStatic fun show(context: Context) {
@@ -89,6 +89,10 @@ object FloatingAvatarOverlay {
         private var closed = false
         private var loaded = false
         private var ready = false
+        private var initializeStarted = false
+        private val shownAt = System.nanoTime()
+        private var frameTicks = 0L
+        private var lastFrameTick = 0L
         private var chest = true
         private var zoom = 2.0
         private var verticalStep = 0
@@ -119,14 +123,17 @@ object FloatingAvatarOverlay {
                 close()
             }
         }
-        private val frame = object : Choreographer.FrameCallback {
-            override fun doFrame(time: Long) {
+        private val frame = object : Runnable {
+            override fun run() {
                 if (closed) return
+                val time = System.nanoTime()
+                frameTicks++; lastFrameTick = time
                 try {
                     val v = viewer
                     if (v != null && power.isInteractive && surface.display?.state == Display.STATE_ON && surface.holder.surface.isValid && frameCamera(v)) {
                         if (ready) { idle?.update(time); v.animator?.updateBoneMatrices() }
                         attempts++
+                        // ModelViewer's FramePacer still decides whether the GPU accepts a frame.
                         if (v.render(time)) rendered++
                         if (loaded && !ready && v.progress >= 1f) {
                             val jawSet = applyRestingJaw(v)
@@ -147,7 +154,8 @@ object FloatingAvatarOverlay {
                         }
                     }
                 } catch (error: Exception) { fail(error); return }
-                Choreographer.getInstance().postFrameCallback(this)
+                // Independent of an Activity's Choreographer; no permanent wake lock.
+                main.postDelayed(this, if (power.isInteractive) 16L else 250L)
             }
         }
 
@@ -203,10 +211,13 @@ object FloatingAvatarOverlay {
                 }
             })
             wm.addView(root, position); added = true
-            surface.post { if (!closed && surface.isAttachedToWindow) initializeRenderer() }
+            // UiHelper handles surface creation when the window attaches. Do not wait on View.post.
+            initializeRenderer()
         }
 
         private fun initializeRenderer() {
+            if (closed || initializeStarted) return
+            initializeStarted = true
             try {
                 Utils.init()
                 val helper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK).apply { setOpaque(false); setMediaOverlay(false) }
@@ -219,7 +230,7 @@ object FloatingAvatarOverlay {
                 lights.setDirection(lights.getInstance(v.light), -0.4f, -0.7f, -1f)
                 ambient = IndirectLight.Builder().irradiance(1, floatArrayOf(0.7f, 0.7f, 0.7f)).intensity(30000f).build(v.engine)
                 v.scene.indirectLight = ambient
-                Choreographer.getInstance().postFrameCallback(frame)
+                main.post(frame)
                 Thread({
                     try {
                         val bytes = context.assets.open("roxanne_wolf_security_breach.glb").use { it.readBytes() }
@@ -344,7 +355,10 @@ object FloatingAvatarOverlay {
             var components = 0
             v?.asset?.let { asset -> for (entity in asset.entities) if (v.engine.renderableManager.getInstance(entity) != 0) components++ }
             val boundsReport = v?.let { renderableBoundsReport(it) } ?: "Renderer unavailable\n"
-            return "OVERLAY DIAGNOSTICS v4\nAvatar-only window=150 x 242 dp\nRenderer target=SurfaceView; transparent surface; on-top stacking\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (chest) "chest / neck" else "Fit / spine"}\nSpine anchor=$spine\nNeck anchor=$neck\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\n$cameraNote\nChest zoom=$zoom; horizontalStep=$horizontalStep; verticalStep=$verticalStep\nIdle=$idleEnabled; diagnostic background=$debugBackground\n$boundsReport\nDrag anywhere; hold still to remove. Settings are in the app.\n"
+            val now = System.nanoTime()
+            val ageMs = (now - shownAt) / 1_000_000L
+            val tickAge = if (lastFrameTick == 0L) "none" else ((now - lastFrameTick) / 1_000_000L).toString()
+            return "OVERLAY DIAGNOSTICS v5\nAvatar-only window=150 x 242 dp\nRenderer target=SurfaceView; transparent surface; on-top stacking\nRender clock=async main Handler; ticks=$frameTicks; last tick age ms=$tickAge\nSession age ms=$ageMs; initializationStarted=$initializeStarted\nRoot attached=${root.isAttachedToWindow}; shown=${root.isShown}; windowVisibility=${root.windowVisibility}\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (chest) "chest / neck" else "Fit / spine"}\nSpine anchor=$spine\nNeck anchor=$neck\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\n$cameraNote\nChest zoom=$zoom; horizontalStep=$horizontalStep; verticalStep=$verticalStep\nIdle=$idleEnabled; diagnostic background=$debugBackground\n$boundsReport\nDrag anywhere; hold still to remove. Settings are in the app.\n"
         }
 
         private fun applyRestingJaw(v: ModelViewer): Boolean {
@@ -364,7 +378,7 @@ object FloatingAvatarOverlay {
 
         private fun releaseCustomResources() {
             main.removeCallbacks(holdToRemove); touching = false
-            Choreographer.getInstance().removeFrameCallback(frame)
+            main.removeCallbacks(frame)
             idle = null
             viewer?.let { v -> v.scene.indirectLight = null; ambient?.let { v.engine.destroyIndirectLight(it) } }
             ambient = null; source = null; viewer = null; loaded = false; ready = false
