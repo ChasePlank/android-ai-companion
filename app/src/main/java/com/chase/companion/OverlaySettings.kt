@@ -16,7 +16,18 @@ import java.util.Locale
 
 /** Activity-owned controls: no settings or diagnostic dialogs in the floating window. */
 object OverlaySettings {
-    internal fun preferences(context: Context): SharedPreferences = context.getSharedPreferences("overlay_framing_v3", Context.MODE_PRIVATE)
+    private const val DEFAULT_VERTICAL_STEP = -4
+
+    internal fun preferences(context: Context): SharedPreferences {
+        val p = context.getSharedPreferences("overlay_framing_v3", Context.MODE_PRIVATE)
+        // Lower the avatar four existing adjustment steps once, never on every Show.
+        // Preserve zoom, mode, horizontal position and subsequent manual adjustments.
+        if (!p.getBoolean("chest_crop_lowered_v1", false)) {
+            p.edit().putInt("vertical_step", (p.getInt("vertical_step", 0) + DEFAULT_VERTICAL_STEP).coerceIn(-18, 18))
+                .putBoolean("chest_crop_lowered_v1", true).apply()
+        }
+        return p
+    }
 
     @JvmStatic fun show(activity: Activity) {
         val p = preferences(activity)
@@ -26,7 +37,7 @@ object OverlaySettings {
         panel.addView(summary)
         fun refresh() {
             val mode = if (p.getBoolean("chest", true)) "Chest / neck" else "Fit / spine"
-            summary.text = String.format(Locale.US, "%s · chest zoom %.1f×\nChest offset: horizontal %d; vertical %d", mode, p.getInt("zoom_tenths", 20) / 10.0, p.getInt("horizontal_step", 0), p.getInt("vertical_step", 0))
+            summary.text = String.format(Locale.US, "%s · chest zoom %.1f×\nChest offset: horizontal %d; vertical %d", mode, p.getInt("zoom_tenths", 20) / 10.0, p.getInt("horizontal_step", 0), p.getInt("vertical_step", DEFAULT_VERTICAL_STEP))
         }
         fun change(action: SharedPreferences.Editor.() -> Unit) { p.edit().apply(action).apply(); FloatingAvatarOverlay.refreshSettings(); refresh() }
         fun row(vararg items: Pair<String, () -> Unit>) {
@@ -38,12 +49,12 @@ object OverlaySettings {
         row("Fit / spine" to { change { putBoolean("chest", false) } }, "Chest / neck" to { change { putBoolean("chest", true) } })
         row("Zoom −" to { change { putBoolean("chest", true); putInt("zoom_tenths", (p.getInt("zoom_tenths", 20) - 2).coerceAtLeast(8)) } },
             "Zoom +" to { change { putBoolean("chest", true); putInt("zoom_tenths", (p.getInt("zoom_tenths", 20) + 2).coerceAtMost(60)) } })
-        row("Avatar ↑" to { change { putBoolean("chest", true); putInt("vertical_step", (p.getInt("vertical_step", 0) + 1).coerceAtMost(18)) } },
-            "Avatar ↓" to { change { putBoolean("chest", true); putInt("vertical_step", (p.getInt("vertical_step", 0) - 1).coerceAtLeast(-18)) } })
+        row("Avatar ↑" to { change { putBoolean("chest", true); putInt("vertical_step", (p.getInt("vertical_step", DEFAULT_VERTICAL_STEP) + 1).coerceAtMost(18)) } },
+            "Avatar ↓" to { change { putBoolean("chest", true); putInt("vertical_step", (p.getInt("vertical_step", DEFAULT_VERTICAL_STEP) - 1).coerceAtLeast(-18)) } })
         row("Avatar ←" to { change { putBoolean("chest", true); putInt("horizontal_step", (p.getInt("horizontal_step", 0) - 1).coerceAtLeast(-18)) } },
             "Avatar →" to { change { putBoolean("chest", true); putInt("horizontal_step", (p.getInt("horizontal_step", 0) + 1).coerceAtMost(18)) } })
-        panel.addView(TextView(activity).apply { text = "Chest zoom: 0.8×–6.0×, default 2.0×. Fit ignores chest zoom and offsets." })
-        row("Reset chest framing" to { change { putBoolean("chest", true); putInt("zoom_tenths", 20); putInt("horizontal_step", 0); putInt("vertical_step", 0) } })
+        panel.addView(TextView(activity).apply { text = "Chest zoom: 0.8×–6.0×, default 2.0×. Default chest crop lowers the avatar four steps (vertical −4). Fit ignores chest zoom and offsets. Head rests 10° down; eyes rest 10° up to compensate." })
+        row("Reset chest framing" to { change { putBoolean("chest", true); putInt("zoom_tenths", 20); putInt("horizontal_step", 0); putInt("vertical_step", DEFAULT_VERTICAL_STEP) } })
         panel.addView(Switch(activity).apply {
             text = "Idle facial movement (speech jaw stays active)"; isChecked = p.getBoolean("idle", true)
             setOnCheckedChangeListener { _, checked -> change { putBoolean("idle", checked) } }
