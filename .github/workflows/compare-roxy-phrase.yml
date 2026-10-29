@@ -1,0 +1,82 @@
+name: Compare Roxy phrase delivery
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/compare-roxy-phrase.yml'
+      - 'tools/compare_roxy_phrase.py'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compare:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1'
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Initialize comparison report
+        run: python tools/compare_roxy_phrase.py --initialize
+      - name: Check out pinned RVC source
+        uses: actions/checkout@v6
+        with:
+          repository: RVC-Project/Retrieval-based-Voice-Conversion-WebUI
+          ref: 81eed5e8f68b6bed1789f682fe78cdd324495afc
+          path: vendor-rvc
+          persist-credentials: false
+          sparse-checkout: |
+            infer/module
+            LICENSE
+      - name: Retrieve validated ONNX without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/export-roxy-voice.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs | map(select(.head_sha == "b4717ca074d66b0e2913384546edfb4c9431ca67")) | .[0].id // empty')
+          [[ "$RUN" =~ ^[0-9]+$ ]] || { echo 'Validated export artifact not found; no substitute or rebuild.' >&2; exit 1; }
+          gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name roxy-synthesizer-onnx --dir voice-model
+          echo "SOURCE_EXPORT_RUN_ID=$RUN" >> "$GITHUB_ENV"
+      - name: Install CPU comparison dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu 'torch>=2.6'
+          python -m pip install --only-binary=:all: numpy scipy onnxruntime 'transformers>=4.45,<5' praat-parselmouth piper-tts
+          python -m pip freeze > phrase-comparison/python-packages.txt
+      - name: Generate and convert the same phrase
+        run: python tools/compare_roxy_phrase.py --model-dir voice-model --upstream vendor-rvc
+      - name: Upload compact comparison report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-phrase-report
+          path: |
+            phrase-comparison/phrase-report.txt
+            phrase-comparison/phrase-report.json
+            phrase-comparison/python-packages.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload three separate clips for listening
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-phrase-comparison
+          path: |
+            phrase-comparison/reference.wav
+            phrase-comparison/baseline.wav
+            phrase-comparison/candidate_sid0_key0.wav
+            phrase-comparison/*-pitch.csv
+            phrase-comparison/phrase-input.json
+            phrase-comparison/VOICE_MODEL_CARD.txt
+          if-no-files-found: error
+          retention-days: 7
