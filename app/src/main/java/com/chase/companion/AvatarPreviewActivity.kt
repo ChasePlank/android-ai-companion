@@ -89,7 +89,7 @@ class AvatarPreviewActivity : Activity() {
                         v.animator?.updateBoneMatrices()
                         syncControls()
                         val keytarNote = if (keytarEntity == null) "Keytar mesh unavailable; visibility unchanged." else if (keytarVisible) "Keytar shown." else "Keytar hidden."
-                        status.text = "Ready. ${jointNames.size} transform nodes. $centerNote $keytarNote " + if (jawSet) "Jaw resting at -8° local Y. Drag: orbit; two fingers: pan; pinch: zoom." else "Jaw not found. Drag: orbit; two fingers: pan; pinch: zoom."
+                        status.text = "Ready. ${jointNames.size} transform nodes. $centerNote $keytarNote Shoulders rest at -72° X; TailB at -90° X. " + if (jawSet) "Jaw resting at -8° local Y. Drag: orbit; two fingers: pan; pinch: zoom." else "Jaw not found. Drag: orbit; two fingers: pan; pinch: zoom."
                     }
                 }
             } catch (error: Exception) {
@@ -340,8 +340,12 @@ class AvatarPreviewActivity : Activity() {
                 val label = "$name [entity $entity]"
                 jointNames.add(label); entities[label] = entity
                 original[entity] = FloatArray(16).also { tm.getTransform(tm.getInstance(entity), it) }
-                offsets[entity] = floatArrayOf(0f, 0f, 0f)
+                offsets[entity] = RigRestDefaults.offsets(name)
                 if (name == jawName && jawLabel == null) jawLabel = label
+            }
+            for (label in jointNames) {
+                val xyz = offsets[entities[label]] ?: continue
+                if (xyz.any { it != 0f }) applyNode(label)
             }
             updateNodeFilter(jawLabel)
             axis.setSelection(1)
@@ -444,8 +448,8 @@ class AvatarPreviewActivity : Activity() {
         pausePlayback()
         val label = joints.selectedItem as? String ?: return
         val entity = entities[label] ?: return
-        offsets[entity] = if (label == jawLabel) floatArrayOf(0f, jawClosedDegrees, 0f) else floatArrayOf(0f, 0f, 0f)
-        if (applyNode(label)) { viewer?.animator?.updateBoneMatrices(); syncControls(); status.text = "Selected node reset; other manual offsets preserved." }
+        offsets[entity] = RigRestDefaults.offsets(viewer?.asset?.getName(entity))
+        if (applyNode(label)) { viewer?.animator?.updateBoneMatrices(); syncControls(); status.text = "Selected node reset to calibrated rest; other manual offsets preserved." }
     }
 
     private fun inspectGlb(bytes: ByteArray): String {

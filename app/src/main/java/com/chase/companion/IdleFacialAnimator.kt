@@ -6,6 +6,7 @@ import kotlin.random.Random
 
 /** User-calibrated joint directions/limits; procedural timing and appearance need phone testing. */
 class IdleFacialAnimator(private val viewer: ModelViewer) {
+    private val missingRestDefaults = RigRestDefaults.applyBody(viewer)
     private data class Joint(val instance: Int, val base: FloatArray)
     private val joints = mutableMapOf<String, Joint>()
     private var speechJaw: Joint? = null
@@ -57,7 +58,7 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
         }
     }
 
-    val missingJoints: List<String> get() = wanted.filter { it !in joints } + if (speechJaw == null) listOf(FacialCalibration.JAW) else emptyList()
+    val missingJoints: List<String> get() = wanted.filter { it !in joints } + (if (speechJaw == null) listOf(FacialCalibration.JAW) else emptyList()) + missingRestDefaults
     private val lidsAvailable get() = (upper + lower).all { it in joints }
     private val eyesAvailable get() = eyes.all { it in joints }
     private val headAvailable get() = head in joints
