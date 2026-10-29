@@ -22,21 +22,22 @@ public class MainActivity extends Activity {
   super.onCreate(state);
   LinearLayout root = new LinearLayout(this);
   root.setOrientation(LinearLayout.VERTICAL); root.setPadding(24,48,24,24);
-  TextView title = new TextView(this); title.setText("AI Companion — diagnostic build"); title.setTextSize(22); root.addView(title);
-  TextView notice = new TextView(this); notice.setText("These controls produce diagnostic echoes, not Qwen replies. Use Qwen chat for the local model. Speech recognition may use your installed provider's cloud service. No always-on microphone. The 3D overlay is experimental; framing and transparency need phone testing."); root.addView(notice);
+  TextView title = new TextView(this); title.setText("AI Companion — overlay controls"); title.setTextSize(22); root.addView(title);
+  TextView notice = new TextView(this); notice.setText("Floating Roxanne is avatar-only: drag anywhere in her window, or hold still to remove. Framing and adjustments stay here in the app. Diagnostic messages below are echoes, not Qwen replies. Use Qwen chat for the local model. Speech recognition may use your provider's cloud service. No always-on microphone."); root.addView(notice);
   button(root, "Enable display over other apps", () -> {
    try { startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()))); }
    catch (ActivityNotFoundException e) { toast("Overlay settings unavailable"); }
   });
   button(root, "Show floating Roxanne", this::showOverlay);
   button(root, "Hide overlay", FloatingAvatarOverlay::hide);
+  button(root, "Overlay settings: framing, zoom, idle and diagnostics", () -> OverlaySettings.show(this));
   button(root, "Tap to speak", this::listen);
   button(root, "Stop spoken reply", () -> { if (tts != null) tts.stop(); });
   input = new EditText(this); input.setHint("Type a diagnostic message"); root.addView(input);
   button(root, "Send diagnostic message", () -> reply(input.getText().toString()));
-  log = new TextView(this); log.setTextIsSelectable(true);
-  ScrollView scroll = new ScrollView(this); scroll.addView(log); root.addView(scroll, new LinearLayout.LayoutParams(-1,0,1));
-  setContentView(root);
+  log = new TextView(this); log.setTextIsSelectable(true); root.addView(log);
+  ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.addView(root);
+  setContentView(scroll);
   tts = new TextToSpeech(getApplicationContext(), status -> {
    if (status == TextToSpeech.SUCCESS && tts != null) {
     int result = tts.setLanguage(Locale.US);

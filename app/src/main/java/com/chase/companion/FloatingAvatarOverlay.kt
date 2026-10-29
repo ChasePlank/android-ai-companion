@@ -1,8 +1,5 @@
 package com.chase.companion
 
-import android.app.AlertDialog
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.PixelFormat
 import android.opengl.Matrix
@@ -13,14 +10,13 @@ import android.provider.Settings
 import android.view.Choreographer
 import android.view.Display
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
 import com.google.android.filament.Camera
 import com.google.android.filament.IndirectLight
@@ -36,7 +32,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.tan
 
-/** Process-scoped diagnostic overlay; not an always-running background service. */
+/** Process-scoped avatar-only overlay; settings live in the app. */
 object FloatingAvatarOverlay {
     private val main = Handler(Looper.getMainLooper())
     private var session: Session? = null
@@ -46,15 +42,11 @@ object FloatingAvatarOverlay {
         if (session != null) return
         val app = context.applicationContext
         if (!Settings.canDrawOverlays(app)) {
-            Toast.makeText(app, "Grant display-over-apps permission first", Toast.LENGTH_LONG).show()
-            return
+            Toast.makeText(app, "Grant display-over-apps permission first", Toast.LENGTH_LONG).show(); return
         }
         val candidate = Session(app)
         session = candidate
-        try { candidate.show() } catch (error: Exception) {
-            candidate.close()
-            Toast.makeText(app, "Overlay failed: ${error.message}", Toast.LENGTH_LONG).show()
-        }
+        try { candidate.show() } catch (error: Exception) { candidate.close(); Toast.makeText(app, "Overlay failed: ${error.message}", Toast.LENGTH_LONG).show() }
     }
 
     @JvmStatic fun hide() {
@@ -62,50 +54,31 @@ object FloatingAvatarOverlay {
         session?.close()
     }
 
+    @JvmStatic fun refreshSettings() {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { refreshSettings() }; return }
+        session?.refreshSettings()
+    }
+
+    @JvmStatic fun diagnostics(): String = session?.diagnosticReport() ?: "Overlay is hidden. Show floating Roxanne to collect a report."
+
     private class Session(private val context: Context) {
         private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         private val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        private val framing = context.getSharedPreferences("overlay_framing", Context.MODE_PRIVATE)
-        private var verticalStep = framing.getInt("vertical_step", 0).coerceIn(-18, 18)
-        private var zoomStep = framing.getInt("zoom_step", 0).coerceIn(-4, 10)
-        private val zoom get() = 1.0 + zoomStep * 0.1
-        // Every new session starts fitted, deliberately bypassing saved crop settings.
-        private var fullFit = true
-        private var debugBackground = false
-        private var diagnosticDialog: AlertDialog? = null
-        private val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        private val surface = SurfaceView(context).apply {
-            setZOrderOnTop(true)
-            holder.setFormat(PixelFormat.TRANSLUCENT)
-        }
-        private val label = TextView(context).apply {
-            text = "Loading Roxanne… · drag here"
-            setTextColor(0xffffffff.toInt()); textSize = 11f; gravity = Gravity.CENTER_VERTICAL
-        }
-        private val idleButton = Button(context).apply {
-            text = "Ⅱ"; contentDescription = "Pause idle facial movement"; isEnabled = false
-            setOnClickListener {
-                idle?.let { animator ->
-                    animator.setIdleEnabled(!animator.enabled)
-                    viewer?.animator?.updateBoneMatrices()
-                    text = if (animator.enabled) "Ⅱ" else "▶"
-                    contentDescription = if (animator.enabled) "Pause idle facial movement" else "Resume idle facial movement"
-                }
-            }
-        }
         private val metrics get() = context.resources.displayMetrics
         private fun dp(value: Int) = (value * metrics.density).roundToInt()
-        private val width = minOf(dp(240), metrics.widthPixels)
-        private val height = minOf(dp(484), metrics.heightPixels)
-        private val position = WindowManager.LayoutParams(
-            width, height, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            PixelFormat.TRANSLUCENT
-        ).apply {
+        private val width = minOf(dp(120), metrics.widthPixels)
+        private val height = minOf(dp(242), metrics.heightPixels)
+        private val position = WindowManager.LayoutParams(width, height, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.LEFT
             x = minOf(dp(16), max(0, metrics.widthPixels - width))
             y = minOf(dp(100), max(0, metrics.heightPixels - height))
         }
+        private val root = object : FrameLayout(context) {
+            override fun onInterceptTouchEvent(event: MotionEvent): Boolean = true
+            override fun onTouchEvent(event: MotionEvent): Boolean = handleTouch(event)
+        }
+        private val surface = SurfaceView(context).apply { setZOrderOnTop(true); holder.setFormat(PixelFormat.TRANSLUCENT) }
         private var viewer: ModelViewer? = null
         private var idle: IdleFacialAnimator? = null
         private var ambient: IndirectLight? = null
@@ -114,26 +87,42 @@ object FloatingAvatarOverlay {
         private var closed = false
         private var loaded = false
         private var ready = false
+        private var chest = true
+        private var zoom = 2.0
+        private var verticalStep = 0
+        private var horizontalStep = 0
+        private var idleEnabled = true
+        private var debugBackground = false
         private var normalizedHeight = 2.0
         private var normalizedWidth = 2.0
         private var normalizedDepth = 2.0
-        private var torsoX = 0.0
-        private var torsoY = 0.0
-        private var torsoZ = -4.0
-        private var headAnchor = false
+        private data class Anchor(val name: String, val x: Double, val y: Double, val z: Double)
+        private var spine = Anchor("Spine missing; normalized-center fallback", 0.0, 0.0, -4.0)
+        private var neck = Anchor("Neck missing; normalized-center fallback", 0.0, 0.0, -4.0)
         private var attempts = 0L
         private var rendered = 0L
-        private var lastLabelTime = 0L
         private var rigNote = "Loading"
         private var cameraNote = "Camera pending"
+        private var touching = false
+        private var dragging = false
+        private var startX = 0f
+        private var startY = 0f
+        private var oldX = 0
+        private var oldY = 0
+        private val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+        private val holdToRemove = Runnable {
+            if (touching && !dragging && !closed) {
+                touching = false
+                root.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                close()
+            }
+        }
         private val frame = object : Choreographer.FrameCallback {
             override fun doFrame(time: Long) {
                 if (closed) return
                 try {
                     val v = viewer
-                    // Let ModelViewer's own FramePacer control frame acceptance, not a second 30 Hz throttle.
-                    if (v != null && power.isInteractive && surface.display?.state == Display.STATE_ON && surface.holder.surface.isValid) {
-                        frameCamera(v)
+                    if (v != null && power.isInteractive && surface.display?.state == Display.STATE_ON && surface.holder.surface.isValid && frameCamera(v)) {
                         if (ready) { idle?.update(time); v.animator?.updateBoneMatrices() }
                         attempts++
                         if (v.render(time)) rendered++
@@ -141,8 +130,11 @@ object FloatingAvatarOverlay {
                             val jawSet = applyRestingJaw(v)
                             val facial = IdleFacialAnimator(v)
                             idle = facial
-                            idleButton.isEnabled = true
+                            facial.setIdleEnabled(idleEnabled)
                             v.animator?.updateBoneMatrices()
+                            // Cache anatomical pivots after normalization and calibrated body rest.
+                            spine = findAnchor(v, "Spine", "Spine_jnt_03")
+                            neck = findAnchor(v, "Neck", "Neck_jnt_05")
                             ready = true
                             rigNote = when {
                                 !jawSet -> "Jaw missing"
@@ -151,127 +143,55 @@ object FloatingAvatarOverlay {
                             }
                         }
                     }
-                    if (lastLabelTime == 0L || time - lastLabelTime >= 1_000_000_000L) {
-                        lastLabelTime = time
-                        label.text = if (ready) "Roxanne · frames $rendered · drag" else if (loaded) "Textures ${((viewer?.progress ?: 0f) * 100).toInt()}% · frames $rendered" else "Loading model · frames $rendered"
-                        label.contentDescription = "$rigNote. Successful render calls $rendered of $attempts. Drag to move overlay."
-                    }
-                } catch (error: Exception) {
-                    Toast.makeText(context, "Avatar render failed: ${error.message}", Toast.LENGTH_LONG).show()
-                    close()
-                    return
-                }
+                } catch (error: Exception) { fail(error); return }
                 Choreographer.getInstance().postFrameCallback(this)
             }
         }
 
-        private fun applyBackground() {
-            viewer?.renderer?.clearOptions = Renderer.ClearOptions().apply {
-                clear = true; discard = true
-                clearColor = if (debugBackground) doubleArrayOf(0.12, 0.025, 0.16, 1.0) else doubleArrayOf(0.0, 0.0, 0.0, 0.0)
-            }
+        fun refreshSettings() {
+            val p = OverlaySettings.preferences(context)
+            chest = p.getBoolean("chest", true)
+            zoom = p.getInt("zoom_tenths", 20).coerceIn(8, 60) / 10.0
+            verticalStep = p.getInt("vertical_step", 0).coerceIn(-18, 18)
+            horizontalStep = p.getInt("horizontal_step", 0).coerceIn(-18, 18)
+            idleEnabled = p.getBoolean("idle", true)
+            debugBackground = p.getBoolean("debug_background", false)
+            idle?.let { if (it.enabled != idleEnabled) { it.setIdleEnabled(idleEnabled); viewer?.animator?.updateBoneMatrices() } }
+            applyBackground()
         }
 
-        private fun diagnosticReport(): String {
-            val v = viewer
-            var components = 0
-            v?.asset?.let { asset ->
-                val rm = v.engine.renderableManager
-                for (entity in asset.entities) if (rm.getInstance(entity) != 0) components++
-            }
-            val viewport = v?.view?.viewport
-            val nativeFrame = surface.holder.surfaceFrame
-            return "OVERLAY DIAGNOSTICS v2\nRenderer target=SurfaceView; transparent surface; on-top stacking\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (fullFit) "whole-model fit" else "chest"}; headAnchor=$headAnchor\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\nTorso target=$torsoX, $torsoY, $torsoZ\n$cameraNote\nSaved verticalStep=$verticalStep; zoom=$zoom; ignored in Fit mode\nDiagnostic background=$debugBackground\n"
-        }
-
-        private fun showInfo() {
-            if (closed) return
-            diagnosticDialog?.dismiss()
-            val report = diagnosticReport()
-            val dialog = AlertDialog.Builder(context)
-                .setTitle("Floating avatar diagnostics")
-                .setMessage(report)
-                .setPositiveButton("Copy report") { _, _ ->
-                    (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Overlay diagnostics", report))
-                    Toast.makeText(context, "Overlay report copied", Toast.LENGTH_SHORT).show()
+        private fun handleTouch(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    touching = true; dragging = false
+                    startX = event.rawX; startY = event.rawY; oldX = position.x; oldY = position.y
+                    main.removeCallbacks(holdToRemove)
+                    main.postDelayed(holdToRemove, ViewConfiguration.getLongPressTimeout().toLong())
                 }
-                .setNeutralButton(if (debugBackground) "Transparent bg" else "Test background") { _, _ ->
-                    if (!closed) { debugBackground = !debugBackground; applyBackground() }
+                MotionEvent.ACTION_MOVE -> if (touching) {
+                    val dx = event.rawX - startX; val dy = event.rawY - startY
+                    if (!dragging && dx * dx + dy * dy > slop * slop) { dragging = true; main.removeCallbacks(holdToRemove) }
+                    if (dragging) {
+                        position.x = (oldX + dx.roundToInt()).coerceIn(0, max(0, metrics.widthPixels - width))
+                        position.y = (oldY + dy.roundToInt()).coerceIn(0, max(0, metrics.heightPixels - height))
+                        try { if (added && !closed) wm.updateViewLayout(root, position) } catch (_: RuntimeException) { close() }
+                    }
                 }
-                .setNegativeButton("Close", null).create()
-            dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
-            diagnosticDialog = dialog
-            dialog.show()
-        }
-
-        private fun framingControls(): LinearLayout {
-            val panel = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(0xcc20242c.toInt())
+                MotionEvent.ACTION_UP -> {
+                    main.removeCallbacks(holdToRemove)
+                    if (touching && !dragging) root.performClick()
+                    touching = false
+                }
+                MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> { main.removeCallbacks(holdToRemove); touching = false }
             }
-            val zoomLabel = TextView(context).apply { gravity = Gravity.CENTER; setTextColor(0xffffffff.toInt()); textSize = 14f }
-            fun refresh() {
-                zoomLabel.text = if (fullFit) "Fit" else String.format(Locale.US, "%.1f×", zoom)
-                zoomLabel.contentDescription = if (fullFit) "Whole model fitted; saved crop ignored" else String.format(Locale.US, "Zoom %.1f times; avatar vertical offset %d steps", zoom, verticalStep)
-            }
-            fun save() {
-                framing.edit().putInt("vertical_step", verticalStep).putInt("zoom_step", zoomStep).apply()
-                refresh()
-            }
-            fun button(text: String, description: String, action: () -> Unit) = Button(context).apply {
-                this.text = text; contentDescription = description; minWidth = 0; setPadding(0, 0, 0, 0)
-                setOnClickListener { if (!closed) { action(); save() } }
-            }
-            val modes = LinearLayout(context)
-            modes.addView(button("Fit", "Fit entire original model bounds in view") { fullFit = true }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            modes.addView(button("Chest", "Frame upper torso using head joint") { fullFit = false }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            modes.addView(button("Info", "Render diagnostics and test background") { showInfo() }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            val vertical = LinearLayout(context)
-            vertical.addView(button("↑", "Move avatar up within chest frame") { fullFit = false; verticalStep = (verticalStep + 1).coerceAtMost(18) }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            vertical.addView(button("↓", "Move avatar down within chest frame") { fullFit = false; verticalStep = (verticalStep - 1).coerceAtLeast(-18) }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            vertical.addView(button("Reset", "Reset crop settings and fit whole model") { verticalStep = 0; zoomStep = 0; fullFit = true }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            val magnification = LinearLayout(context)
-            magnification.addView(button("−", "Zoom out in chest mode") { fullFit = false; zoomStep = (zoomStep - 1).coerceAtLeast(-4) }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            magnification.addView(zoomLabel, LinearLayout.LayoutParams(0, dp(48), 1f))
-            magnification.addView(button("+", "Zoom in in chest mode") { fullFit = false; zoomStep = (zoomStep + 1).coerceAtMost(10) }, LinearLayout.LayoutParams(0, dp(48), 1f))
-            panel.addView(modes, LinearLayout.LayoutParams(-1, dp(48)))
-            panel.addView(vertical, LinearLayout.LayoutParams(-1, dp(48)))
-            panel.addView(magnification, LinearLayout.LayoutParams(-1, dp(48)))
-            refresh()
-            return panel
+            return true
         }
 
         fun show() {
-            val bar = LinearLayout(context).apply { setBackgroundColor(0xcc20242c.toInt()); gravity = Gravity.CENTER_VERTICAL }
-            bar.addView(label, LinearLayout.LayoutParams(0, dp(40), 1f))
-            bar.addView(idleButton, LinearLayout.LayoutParams(dp(48), dp(40)))
-            bar.addView(Button(context).apply {
-                text = "×"; contentDescription = "Close floating Roxanne"; setOnClickListener { close() }
-            }, LinearLayout.LayoutParams(dp(48), dp(40)))
-            root.addView(bar, LinearLayout.LayoutParams(-1, dp(40)))
-            root.addView(FrameLayout(context).apply {
-                clipChildren = true; addView(surface, FrameLayout.LayoutParams(-1, -1))
-            }, LinearLayout.LayoutParams(-1, 0, 1f))
-            root.addView(framingControls(), LinearLayout.LayoutParams(-1, dp(144)))
-            label.setOnTouchListener(object : View.OnTouchListener {
-                private var startX = 0f; private var startY = 0f
-                private var oldX = 0; private var oldY = 0
-                override fun onTouch(view: View, event: MotionEvent): Boolean {
-                    when (event.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> { startX = event.rawX; startY = event.rawY; oldX = position.x; oldY = position.y; return true }
-                        MotionEvent.ACTION_MOVE -> {
-                            position.x = (oldX + (event.rawX - startX).roundToInt()).coerceIn(0, max(0, metrics.widthPixels - width))
-                            position.y = (oldY + (event.rawY - startY).roundToInt()).coerceIn(0, max(0, metrics.heightPixels - height))
-                            try { if (added && !closed) wm.updateViewLayout(root, position) } catch (_: RuntimeException) { close() }
-                            return true
-                        }
-                        MotionEvent.ACTION_UP -> { view.performClick(); return true }
-                        MotionEvent.ACTION_CANCEL -> return true
-                    }
-                    return false
-                }
-            })
-            // Cleanup listener precedes ModelViewer's engine-destroying detach listener.
+            refreshSettings()
+            root.contentDescription = "Floating Roxanne. Drag anywhere to move; hold still to remove. Settings are inside the app."
+            root.addView(surface, FrameLayout.LayoutParams(-1, -1))
+            // Register before ModelViewer's later engine-destroying detach listener.
             surface.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(view: View) {}
                 override fun onViewDetachedFromWindow(view: View) {
@@ -286,7 +206,6 @@ object FloatingAvatarOverlay {
         private fun initializeRenderer() {
             try {
                 Utils.init()
-                // UiHelper sets the holder format and on-top stacking before attaching.
                 val helper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK).apply { setOpaque(false); setMediaOverlay(false) }
                 val v = ModelViewer(surfaceView = surface, uiHelper = helper, manipulator = null)
                 viewer = v
@@ -309,14 +228,13 @@ object FloatingAvatarOverlay {
                                     source = buffer; v.loadModelGlb(buffer)
                                     val asset = v.asset ?: error("Filament could not load bundled Roxanne")
                                     val half = asset.boundingBox.halfExtent
-                                    val maxExtent = 2f * maxOf(half[0], half[1], half[2])
-                                    require(maxExtent.isFinite() && maxExtent > 0f) { "Invalid model bounds" }
-                                    normalizedWidth = (4f * half[0] / maxExtent).toDouble()
-                                    normalizedHeight = (4f * half[1] / maxExtent).toDouble()
-                                    normalizedDepth = (4f * half[2] / maxExtent).toDouble()
+                                    val extent = 2f * maxOf(half[0], half[1], half[2])
+                                    require(extent.isFinite() && extent > 0f) { "Invalid model bounds" }
+                                    normalizedWidth = (4f * half[0] / extent).toDouble()
+                                    normalizedHeight = (4f * half[1] / extent).toDouble()
+                                    normalizedDepth = (4f * half[2] / extent).toDouble()
                                     require(normalizedWidth.isFinite() && normalizedWidth >= 0.0 && normalizedHeight.isFinite() && normalizedHeight > 0.0 && normalizedDepth.isFinite() && normalizedDepth >= 0.0) { "Invalid normalized bounds" }
                                     v.transformToUnitCube()
-                                    findTorsoTarget(v)
                                     loaded = true; rigNote = "Geometry loaded; resources pending"
                                 } catch (error: Exception) { fail(error) }
                             }
@@ -326,38 +244,59 @@ object FloatingAvatarOverlay {
             } catch (error: Exception) { fail(error) }
         }
 
-        private fun findTorsoTarget(v: ModelViewer) {
-            torsoX = 0.0; torsoY = normalizedHeight * 0.25; torsoZ = -4.0; headAnchor = false
-            val asset = v.asset ?: return
-            val head = asset.entities.firstOrNull { asset.getName(it) == "Head_jnt_06" } ?: return
+        private fun findAnchor(v: ModelViewer, base: String, preferred: String): Anchor {
+            val fallback = Anchor("$base missing; normalized-center fallback", 0.0, 0.0, -4.0)
+            val asset = v.asset ?: return fallback
+            val entity = asset.entities.firstOrNull { asset.getName(it) == preferred }
+                ?: asset.entities.firstOrNull {
+                    val name = asset.getName(it) ?: ""
+                    name.equals(base, true) || name.startsWith("${base}_jnt_", true)
+                } ?: return fallback
             val tm = v.engine.transformManager
-            val instance = tm.getInstance(head)
-            if (instance == 0) return
+            val instance = tm.getInstance(entity)
+            if (instance == 0) return fallback
             val world = FloatArray(16).also { tm.getWorldTransform(instance, it) }
-            if (!world[12].isFinite() || !world[13].isFinite() || !world[14].isFinite()) return
-            torsoX = world[12].toDouble(); torsoY = world[13].toDouble() - normalizedHeight * 0.12; torsoZ = world[14].toDouble(); headAnchor = true
+            if (!world[12].isFinite() || !world[13].isFinite() || !world[14].isFinite()) return fallback
+            return Anchor(asset.getName(entity) ?: base, world[12].toDouble(), world[13].toDouble(), world[14].toDouble())
         }
 
-        private fun frameCamera(v: ModelViewer) {
+        private fun frameCamera(v: ModelViewer): Boolean {
             val nativeFrame = surface.holder.surfaceFrame
-            val renderWidth = nativeFrame.width()
-            val renderHeight = nativeFrame.height()
-            if (renderWidth <= 0 || renderHeight <= 0) return
+            val w = nativeFrame.width(); val h = nativeFrame.height()
+            if (w <= 0 || h <= 0) return false
             val viewport = v.view.viewport
-            if (viewport.width != renderWidth || viewport.height != renderHeight) {
-                v.view.viewport = Viewport(0, 0, renderWidth, renderHeight)
-            }
-            val aspect = renderWidth.toDouble() / renderHeight.toDouble()
+            if (viewport.width != w || viewport.height != h) v.view.viewport = Viewport(0, 0, w, h)
+            val aspect = w.toDouble() / h.toDouble()
             val tangent = tan(Math.toRadians(35.0 / 2.0))
-            val halfHeight = if (fullFit) normalizedHeight * 0.5 else normalizedHeight * 0.24
-            val halfWidth = if (fullFit) normalizedWidth * 0.5 else normalizedHeight * 0.25
-            val distance = (max(halfHeight / tangent, halfWidth / (aspect * tangent)) * (if (fullFit) 1.15 else 1.08) / (if (fullFit) 1.0 else zoom) + normalizedDepth * 0.5).coerceAtLeast(0.2)
-            val x = if (fullFit) 0.0 else torsoX
-            val y = if (fullFit) 0.0 else torsoY - normalizedHeight * verticalStep * 0.025
-            val z = if (fullFit) -4.0 else torsoZ
+            val halfHeight = normalizedHeight * if (chest) 0.20 else 0.5
+            val halfWidth = if (chest) normalizedHeight * 0.14 else normalizedWidth * 0.5
+            val baseDistance = max(halfHeight / tangent, halfWidth / (aspect * tangent)) * (if (chest) 1.08 else 1.15) + normalizedDepth * 0.5
+            // Scale the entire distance: no unscaled depth offset that defeats close zoom.
+            val distance = (baseDistance / if (chest) zoom else 1.0).coerceAtLeast(0.2)
+            val anchor = if (chest) neck else spine
+            val x = anchor.x - if (chest) normalizedHeight * horizontalStep * 0.025 else 0.0
+            val y = anchor.y - if (chest) normalizedHeight * verticalStep * 0.025 else 0.0
+            val z = anchor.z
             v.camera.setProjection(35.0, aspect, 0.05, 1000.0, Camera.Fov.VERTICAL)
             v.camera.lookAt(x, y, z + distance, x, y, z, 0.0, 1.0, 0.0)
             cameraNote = String.format(Locale.US, "Camera target=(%.3f, %.3f, %.3f); distance=%.3f; aspect=%.3f", x, y, z, distance, aspect)
+            return true
+        }
+
+        private fun applyBackground() {
+            viewer?.renderer?.clearOptions = Renderer.ClearOptions().apply {
+                clear = true; discard = true
+                clearColor = if (debugBackground) doubleArrayOf(0.12, 0.025, 0.16, 1.0) else doubleArrayOf(0.0, 0.0, 0.0, 0.0)
+            }
+        }
+
+        fun diagnosticReport(): String {
+            val v = viewer
+            val viewport = v?.view?.viewport
+            val nativeFrame = surface.holder.surfaceFrame
+            var components = 0
+            v?.asset?.let { asset -> for (entity in asset.entities) if (v.engine.renderableManager.getInstance(entity) != 0) components++ }
+            return "OVERLAY DIAGNOSTICS v3\nAvatar-only window=120 x 242 dp\nRenderer target=SurfaceView; transparent surface; on-top stacking\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (chest) "chest / neck" else "Fit / spine"}\nSpine anchor=$spine\nNeck anchor=$neck\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\n$cameraNote\nChest zoom=$zoom; horizontalStep=$horizontalStep; verticalStep=$verticalStep\nIdle=$idleEnabled; diagnostic background=$debugBackground\nDrag anywhere; hold still to remove. Settings are in the app.\n"
         }
 
         private fun applyRestingJaw(v: ModelViewer): Boolean {
@@ -373,13 +312,12 @@ object FloatingAvatarOverlay {
             return true
         }
 
-        private fun fail(error: Exception) {
-            Toast.makeText(context, "Avatar overlay failed: ${error.message}", Toast.LENGTH_LONG).show(); close()
-        }
+        private fun fail(error: Exception) { Toast.makeText(context, "Avatar overlay failed: ${error.message}", Toast.LENGTH_LONG).show(); close() }
 
         private fun releaseCustomResources() {
+            main.removeCallbacks(holdToRemove); touching = false
             Choreographer.getInstance().removeFrameCallback(frame)
-            diagnosticDialog?.dismiss(); diagnosticDialog = null; idle = null
+            idle = null
             viewer?.let { v -> v.scene.indirectLight = null; ambient?.let { v.engine.destroyIndirectLight(it) } }
             ambient = null; source = null; viewer = null; loaded = false; ready = false
         }

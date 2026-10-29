@@ -4,7 +4,7 @@ import android.opengl.Matrix
 import com.google.android.filament.utils.ModelViewer
 import kotlin.random.Random
 
-/** User-calibrated joint directions/limits; procedural timing and appearance need phone testing. */
+/** User-calibrated joint directions/limits; appearance needs phone testing. */
 class IdleFacialAnimator(private val viewer: ModelViewer) {
     private val missingRestDefaults = RigRestDefaults.applyBody(viewer)
     private data class Joint(val instance: Int, val base: FloatArray)
@@ -67,7 +67,7 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
 
     fun setIdleEnabled(value: Boolean) { enabled = value; reset() }
 
-    /** Restore original head/eye/lid transforms without touching the speech-driven jaw. */
+    /** Restore head/eyes/lids without touching the speech-driven jaw. */
     private fun reset() {
         val tm = viewer.engine.transformManager
         joints.values.forEach { tm.setTransform(it.instance, it.base) }
@@ -78,7 +78,7 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
     }
 
     fun update(time: Long) {
-        // Overlay constructs us after applyRestingJaw: this cached jaw base already includes -8°.
+        // The cached jaw base includes the overlay's calibrated -8° resting offset.
         speechJaw?.let { joint ->
             val relative = (FacialCalibration.JAW_OPEN - FacialCalibration.JAW_CLOSED) * SpeechJawState.openness(time)
             applyJoint(joint, 0f, relative, 0f)
@@ -87,8 +87,7 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
         if (lastTime == 0L) { lastTime = time; return }
         val delta = (time - lastTime).toDouble() / 1_000_000_000.0
         if (delta < 0.0 || delta > 0.5) { reset(); lastTime = time; return }
-        lastTime = time
-        clock += delta.toFloat()
+        lastTime = time; clock += delta.toFloat()
         if (lidsAvailable) updateBlink()
         if (eyesAvailable || headAvailable) updateGaze()
         if (headAvailable) updateHead()
@@ -137,18 +136,20 @@ class IdleFacialAnimator(private val viewer: ModelViewer) {
         }
         if (eyesAvailable) {
             val pose = FacialCalibration.gazePose(currentRight, currentUp)
-            eyes.forEach { apply(it, pose.xDegrees, pose.yDegrees) }
+            apply(FacialCalibration.LEFT_EYE, pose.xDegrees, pose.yDegrees)
+            // The right eye's horizontal local axis is reversed; vertical gaze stays shared.
+            apply(FacialCalibration.RIGHT_EYE, pose.xDegrees, -pose.yDegrees)
         }
     }
 
     private fun scheduleHead() {
         headCurrent.copyInto(headFrom)
-        if (targetRight == 0f && targetUp == 0f) { headTarget.fill(0f) }
+        if (targetRight == 0f && targetUp == 0f) headTarget.fill(0f)
         else {
-            val larger = random.nextFloat() < 0.12f
-            val follow = if (larger) between(0.55f, 0.8f) else between(0.15f, 0.35f)
-            val tilt = if (larger) 8f else 3f
-            // Local X: negative left tilt. Y: negative up. Z: negative right turn.
+            val larger = random.nextFloat() < 0.25f
+            val follow = if (larger) between(0.9f, 1.1f) else between(0.55f, 0.85f)
+            val tilt = if (larger) 12f else 6f
+            // Stronger ordinary turns, with the existing ±30° safety limits unchanged.
             headTarget[0] = between(-tilt, tilt).coerceIn(-30f, 30f)
             headTarget[1] = (-targetUp * follow).coerceIn(-30f, 30f)
             headTarget[2] = (-targetRight * follow).coerceIn(-30f, 30f)
