@@ -14,7 +14,7 @@ import android.view.Choreographer
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.TextureView
+import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -25,6 +25,7 @@ import android.widget.Toast
 import com.google.android.filament.Camera
 import com.google.android.filament.IndirectLight
 import com.google.android.filament.Renderer
+import com.google.android.filament.Viewport
 import com.google.android.filament.android.UiHelper
 import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
@@ -73,7 +74,10 @@ object FloatingAvatarOverlay {
         private var debugBackground = false
         private var diagnosticDialog: AlertDialog? = null
         private val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        private val texture = TextureView(context).apply { isOpaque = false }
+        private val surface = SurfaceView(context).apply {
+            setZOrderOnTop(true)
+            holder.setFormat(PixelFormat.TRANSLUCENT)
+        }
         private val label = TextView(context).apply {
             text = "Loading Roxanne… · drag here"
             setTextColor(0xffffffff.toInt()); textSize = 11f; gravity = Gravity.CENTER_VERTICAL
@@ -128,8 +132,8 @@ object FloatingAvatarOverlay {
                 try {
                     val v = viewer
                     // Let ModelViewer's own FramePacer control frame acceptance, not a second 30 Hz throttle.
-                    if (v != null && power.isInteractive && texture.display?.state == Display.STATE_ON) {
-                        if (texture.width > 0 && texture.height > 0) frameCamera(v)
+                    if (v != null && power.isInteractive && surface.display?.state == Display.STATE_ON && surface.holder.surface.isValid) {
+                        frameCamera(v)
                         if (ready) { idle?.update(time); v.animator?.updateBoneMatrices() }
                         attempts++
                         if (v.render(time)) rendered++
@@ -175,7 +179,9 @@ object FloatingAvatarOverlay {
                 val rm = v.engine.renderableManager
                 for (entity in asset.entities) if (rm.getInstance(entity) != 0) components++
             }
-            return "OVERLAY DIAGNOSTICS v1\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nTexture: ${texture.width} x ${texture.height}; available=${texture.isAvailable}; attached=${texture.isAttachedToWindow}\nDisplay=${texture.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (fullFit) "whole-model fit" else "chest"}; headAnchor=$headAnchor\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\nTorso target=$torsoX, $torsoY, $torsoZ\n$cameraNote\nSaved verticalStep=$verticalStep; zoom=$zoom; ignored in Fit mode\nDiagnostic background=$debugBackground\n"
+            val viewport = v?.view?.viewport
+            val nativeFrame = surface.holder.surfaceFrame
+            return "OVERLAY DIAGNOSTICS v2\nRenderer target=SurfaceView; transparent surface; on-top stacking\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (fullFit) "whole-model fit" else "chest"}; headAnchor=$headAnchor\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\nTorso target=$torsoX, $torsoY, $torsoZ\n$cameraNote\nSaved verticalStep=$verticalStep; zoom=$zoom; ignored in Fit mode\nDiagnostic background=$debugBackground\n"
         }
 
         private fun showInfo() {
@@ -244,7 +250,7 @@ object FloatingAvatarOverlay {
             }, LinearLayout.LayoutParams(dp(48), dp(40)))
             root.addView(bar, LinearLayout.LayoutParams(-1, dp(40)))
             root.addView(FrameLayout(context).apply {
-                clipChildren = true; addView(texture, FrameLayout.LayoutParams(-1, -1))
+                clipChildren = true; addView(surface, FrameLayout.LayoutParams(-1, -1))
             }, LinearLayout.LayoutParams(-1, 0, 1f))
             root.addView(framingControls(), LinearLayout.LayoutParams(-1, dp(144)))
             label.setOnTouchListener(object : View.OnTouchListener {
@@ -265,7 +271,8 @@ object FloatingAvatarOverlay {
                     return false
                 }
             })
-            texture.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            // Cleanup listener precedes ModelViewer's engine-destroying detach listener.
+            surface.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(view: View) {}
                 override fun onViewDetachedFromWindow(view: View) {
                     releaseCustomResources(); closed = true; added = false
@@ -273,14 +280,15 @@ object FloatingAvatarOverlay {
                 }
             })
             wm.addView(root, position); added = true
-            texture.post { if (!closed && texture.isAttachedToWindow) initializeRenderer() }
+            surface.post { if (!closed && surface.isAttachedToWindow) initializeRenderer() }
         }
 
         private fun initializeRenderer() {
             try {
                 Utils.init()
-                val helper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK).apply { setOpaque(false) }
-                val v = ModelViewer(textureView = texture, uiHelper = helper, manipulator = null)
+                // UiHelper sets the holder format and on-top stacking before attaching.
+                val helper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK).apply { setOpaque(false); setMediaOverlay(false) }
+                val v = ModelViewer(surfaceView = surface, uiHelper = helper, manipulator = null)
                 viewer = v
                 v.autoPlayAnimations = false
                 v.view.blendMode = com.google.android.filament.View.BlendMode.TRANSLUCENT
@@ -331,7 +339,15 @@ object FloatingAvatarOverlay {
         }
 
         private fun frameCamera(v: ModelViewer) {
-            val aspect = texture.width.toDouble() / texture.height.toDouble()
+            val nativeFrame = surface.holder.surfaceFrame
+            val renderWidth = nativeFrame.width()
+            val renderHeight = nativeFrame.height()
+            if (renderWidth <= 0 || renderHeight <= 0) return
+            val viewport = v.view.viewport
+            if (viewport.width != renderWidth || viewport.height != renderHeight) {
+                v.view.viewport = Viewport(0, 0, renderWidth, renderHeight)
+            }
+            val aspect = renderWidth.toDouble() / renderHeight.toDouble()
             val tangent = tan(Math.toRadians(35.0 / 2.0))
             val halfHeight = if (fullFit) normalizedHeight * 0.5 else normalizedHeight * 0.24
             val halfWidth = if (fullFit) normalizedWidth * 0.5 else normalizedHeight * 0.25
