@@ -1,0 +1,95 @@
+name: Test Roxy candidate sentence
+on:
+  workflow_dispatch:
+    inputs:
+      speaker_id:
+        description: 'Unconfirmed candidate speaker ID (0..108)'
+        required: true
+        default: '0'
+        type: string
+      pitch_shift:
+        description: 'Pitch shift in semitones (-12..12)'
+        required: true
+        default: '0'
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/test-roxy-sentence.yml'
+      - 'tools/test_roxy_sentence.py'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  sentence:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      SPEAKER_ID: ${{ inputs.speaker_id || '0' }}
+      PITCH_SHIFT: ${{ inputs.pitch_shift || '0' }}
+      TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1'
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Initialize small report
+        run: python tools/test_roxy_sentence.py --initialize
+      - name: Check out pinned excitation generator
+        uses: actions/checkout@v6
+        with:
+          repository: RVC-Project/Retrieval-based-Voice-Conversion-WebUI
+          ref: 81eed5e8f68b6bed1789f682fe78cdd324495afc
+          path: vendor-rvc
+          persist-credentials: false
+          sparse-checkout: |
+            infer/module
+            LICENSE
+      - name: Retrieve the successful saved ONNX artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/export-roxy-voice.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs | map(select(.head_sha == "b4717ca074d66b0e2913384546edfb4c9431ca67")) | .[0].id // empty')
+          if [[ ! "$RUN" =~ ^[0-9]+$ ]]; then
+            echo 'No successful export run found for the validated commit. No model will be rebuilt or silently substituted.' >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq '.head_sha == "b4717ca074d66b0e2913384546edfb4c9431ca67" and .conclusion == "success" and .head_branch == "main"' | grep -qx true
+          gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name roxy-synthesizer-onnx --dir voice-model
+          echo "SOURCE_EXPORT_RUN_ID=$RUN" >> "$GITHUB_ENV"
+      - name: Install CPU sentence-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends espeak-ng
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu 'torch>=2.6'
+          python -m pip install --only-binary=:all: numpy scipy onnxruntime 'transformers>=4.45,<5' praat-parselmouth
+          python -m pip freeze > voice-sample/python-packages.txt
+      - name: Convert one generated baseline sentence
+        run: python tools/test_roxy_sentence.py --model-dir voice-model --upstream vendor-rvc
+      - name: Upload small diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-sentence-report
+          path: |
+            voice-sample/sentence-report.txt
+            voice-sample/sentence-report.json
+            voice-sample/python-packages.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload baseline and candidate WAV only after successful conversion
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-candidate-sentence
+          path: |
+            voice-sample/baseline.wav
+            voice-sample/candidate_*.wav
+          if-no-files-found: error
+          retention-days: 7
