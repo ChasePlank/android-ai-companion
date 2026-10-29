@@ -23,7 +23,7 @@ public class MainActivity extends Activity {
   LinearLayout root = new LinearLayout(this);
   root.setOrientation(LinearLayout.VERTICAL); root.setPadding(24,48,24,24);
   TextView title = new TextView(this); title.setText("AI Companion — overlay controls"); title.setTextSize(22); root.addView(title);
-  TextView notice = new TextView(this); notice.setText("Floating Roxanne is avatar-only: drag anywhere in her window, or hold still to remove. Framing and adjustments stay here in the app. Diagnostic messages below are echoes, not Qwen replies. Use Qwen chat for the local model. Speech recognition may use your provider's cloud service. No always-on microphone."); root.addView(notice);
+  TextView notice = new TextView(this); notice.setText("Floating Roxanne is avatar-only: drag anywhere in her window, or hold still to remove. Framing and adjustments stay here in the app. The hands-free test is separately opt-in and uses an available on-device recognizer. Diagnostic messages below are echoes, not Qwen replies; their speech recognition may use your provider's cloud service. Use Qwen chat for the local model."); root.addView(notice);
   button(root, "Enable display over other apps", () -> {
    try { startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()))); }
    catch (ActivityNotFoundException e) { toast("Overlay settings unavailable"); }
@@ -31,6 +31,7 @@ public class MainActivity extends Activity {
   button(root, "Show floating Roxanne", this::showOverlay);
   button(root, "Hide overlay", FloatingAvatarOverlay::hide);
   button(root, "Overlay settings: framing, zoom, idle and diagnostics", () -> OverlaySettings.show(this));
+  button(root, "Hands-free assistant (local test)", () -> startActivity(new Intent(this, HandsFreeActivity.class)));
   button(root, "Tap to speak", this::listen);
   button(root, "Stop spoken reply", () -> { if (tts != null) tts.stop(); });
   input = new EditText(this); input.setHint("Type a diagnostic message"); root.addView(input);
