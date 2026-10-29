@@ -15,105 +15,96 @@ jobs:
         with:
           distribution: oracle
           java-version: '27'
+      - name: Prepare fixed-model node-test preview
+        shell: python
+        run: |
+          from pathlib import Path
+          model = Path('Roxanne_Wolf_Toggle_fix.glb')
+          assert model.is_file(), 'Fixed toggle GLB missing'
+          gradle = Path('app/build.gradle')
+          text = gradle.read_text()
+          anchor = "from(rootProject.file('roxanne_wolf_security_breach.glb'))"
+          assert text.count(anchor) == 1, 'Asset task changed; review required'
+          gradle.write_text(text.replace(anchor, anchor + "\n from(rootProject.file('Roxanne_Wolf_Toggle_fix.glb'))"))
+          activity = Path('app/src/main/java/com/chase/companion/AvatarPreviewActivity.kt')
+          text = activity.read_text()
+          changes = {
+              'assets.open("roxanne_wolf_security_breach.glb")': 'assets.open("Roxanne_Wolf_Toggle_fix.glb")',
+              'offsets[entity] = RigRestDefaults.offsets(name)': 'offsets[entity] = floatArrayOf(0f, 0f, 0f)',
+              'offsets[entity] = RigRestDefaults.offsets(viewer?.asset?.getName(entity))': 'offsets[entity] = floatArrayOf(0f, 0f, 0f)',
+              'val jawSet = applyJawOpenness(0f)': 'val jawSet = false',
+              'keytarButton.isEnabled = applyKeytarVisibility(v)': 'keytarButton.isEnabled = false',
+              '            bindKeytar(v)': '            keytarEntity = null // No original-model visibility assumptions',
+              'Roxanne — full rig inspection': 'Alongside — fixed model node test',
+              'Loading bundled Roxanne model…': 'Loading fixed toggle model for node testing…',
+              'Shoulders rest at -72° X; TailB at -90° X. ': 'Exported rest pose; original rig calibration disabled. ',
+              'Jaw not found. Drag: orbit; two fingers: pan; pinch: zoom.': 'Automatic jaw pose disabled. No skin was found in the uploaded inspection; nodes may not deform the mesh. Drag: orbit; two fingers: pan; pinch: zoom.',
+              'Stop / calibrated rest': 'Stop / exported rest',
+              'calibrated rest': 'exported rest',
+              'Calibrated rest': 'Exported rest'
+          }
+          for old, new in changes.items():
+              assert old in text, 'Preview source changed; missing: ' + old
+              text = text.replace(old, new)
+          activity.write_text(text)
+          print('Fixed model is preview-only. Original overlay asset retained. No source patches are committed by this job.')
       - name: Restore persistent diagnostic signing key
         shell: bash
         env:
           COMPANION_DEBUG_KEYSTORE_BASE64: ${{ secrets.COMPANION_DEBUG_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-          if [ -z "$COMPANION_DEBUG_KEYSTORE_BASE64" ]; then
-            echo '::error::Missing COMPANION_DEBUG_KEYSTORE_BASE64 repository secret. Reuse the existing key; do not generate a new one.'
-            exit 1
-          fi
+          test -n "$COMPANION_DEBUG_KEYSTORE_BASE64" || { echo '::error::Missing existing signing key; do not generate a replacement.'; exit 1; }
           umask 077
           keyfile="$RUNNER_TEMP/companion-signing.jks"
           printf '%s' "$COMPANION_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$keyfile"
           test -s "$keyfile"
           keytool -list -storetype JKS -keystore "$keyfile" -storepass android -alias androiddebugkey > /dev/null
           echo "COMPANION_SIGNING_KEYSTORE=$keyfile" >> "$GITHUB_ENV"
-          echo '## Persistent diagnostic signing key restored' >> "$GITHUB_STEP_SUMMARY"
           echo "Version code: $((GITHUB_RUN_NUMBER + 4))" >> "$GITHUB_STEP_SUMMARY"
-          echo "Version name: 0.4-avatar-preview.build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
       - name: Install Android API 36
         shell: bash
         run: |
           set -euo pipefail
           test -n "$ANDROID_HOME"
-          if ! "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install 'platforms;android-36' > "$RUNNER_TEMP/sdk-install.txt" 2>&1; then
-            {
-              echo '## API 36 installation failed'
-              echo '```text'
-              tail -n 20 "$RUNNER_TEMP/sdk-install.txt"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            tail -n 20 "$RUNNER_TEMP/sdk-install.txt"
-            exit 1
-          fi
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install 'platforms;android-36'
           test -f "$ANDROID_HOME/platforms/android-36/android.jar"
-          echo '## Building with API 36 and Filament 1.75.0' >> "$GITHUB_STEP_SUMMARY"
       - name: Fetch and verify official Filament AARs
         run: python3 tools/fetch_filament.py
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '9.8.2'
-      - name: Print build runtime versions
-        run: |
-          java -version
-          gradle --version
       - name: Assemble debug APK
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
+          java -version
+          gradle --version
           gradle --no-daemon --console=plain --stacktrace :app:assembleDebug 2>&1 | tee "$RUNNER_TEMP/gradle-build.log"
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            {
-              echo '## Build failure: first diagnostic lines'
-              echo '```text'
-              grep -m 12 -A 2 -E '^e:|^error:|incompatible version|binary version|metadata version|requires libraries|requires.*version|^\* What went wrong:|^Execution failed|^> ' "$RUNNER_TEMP/gradle-build.log" | head -n 45 || true
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '## Debug APK build succeeded' >> "$GITHUB_STEP_SUMMARY"
-          fi
-          exit "$status"
       - name: Verify APK signing certificate
         shell: bash
         run: |
           set -euo pipefail
           apk=app/build/outputs/apk/debug/app-debug.apk
           apksigner=$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)
-          if [ -z "$apksigner" ]; then
-            echo '::error::apksigner was not found in Android build-tools.'
-            exit 1
-          fi
+          test -n "$apksigner"
           keytool -exportcert -storetype JKS -keystore "$COMPANION_SIGNING_KEYSTORE" -storepass android -alias androiddebugkey -file "$RUNNER_TEMP/companion-cert.der"
           expected=$(sha256sum "$RUNNER_TEMP/companion-cert.der" | awk '{print $1}')
           "$apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
           actual=$(sed -nE 's/^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | tr -d ':\r ' | tr '[:upper:]' '[:lower:]')
           count=$(grep -cE '^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest:' "$RUNNER_TEMP/apk-signature.txt" || true)
+          cat "$RUNNER_TEMP/apk-signature.txt"
+          test "$count" = 1 && test "$actual" = "$expected" || { echo '::error::Signing mismatch; upload blocked.'; exit 1; }
           {
-            echo '## Public signing diagnostics'
-            echo "apksigner path: $apksigner"
-            echo "Expected certificate SHA-256: $expected"
-            echo "Extracted certificate SHA-256: ${actual:-<empty>}"
-            echo "Matched signer count: $count"
-            echo '```text'
-            cat "$RUNNER_TEMP/apk-signature.txt"
-            echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "$count" != 1 ] || [ "$actual" != "$expected" ]; then
-            echo '::error::APK signer does not match the persistent keystore. Artifact upload blocked.'
-            exit 1
-          fi
-          {
-            echo '## APK signing certificate verified'
+            echo '## Fixed-toggle node-test APK'
+            echo 'Preview: Roxanne_Wolf_Toggle_fix.glb; exported rest pose; manual XYZ node controls.'
+            echo 'Original overlay and its model retained. No skin repair or deformation compatibility claimed.'
             echo "Certificate SHA-256: $actual"
             echo "APK SHA-256: $(sha256sum "$apk" | awk '{print $1}')"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
-          name: companion-diagnostic-debug-${{ github.run_number }}
+          name: companion-fixed-node-test-debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Remove runner signing key
