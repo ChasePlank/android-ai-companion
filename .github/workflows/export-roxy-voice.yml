@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/export-roxy-voice.yml'
       - 'tools/export_roxy_synthesizer.py'
+      - 'tools/export_roxy_with_attention_fix.py'
 permissions:
   contents: read
 jobs:
@@ -39,12 +40,12 @@ jobs:
           python -m pip install --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu 'torch>=2.6'
           python -m pip install --only-binary=:all: numpy scipy onnx onnxruntime
           python -m pip freeze > voice-export/python-packages.txt
-      - name: Restricted weights load, core export and numerical validation
+      - name: Shape-safe attention, restricted weights load and numerical validation
         env:
           TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1'
           OMP_NUM_THREADS: '2'
           MKL_NUM_THREADS: '2'
-        run: python tools/export_roxy_synthesizer.py --upstream vendor-rvc
+        run: python tools/export_roxy_with_attention_fix.py --upstream vendor-rvc
       - name: Upload small readable report
         if: always()
         uses: actions/upload-artifact@v7
