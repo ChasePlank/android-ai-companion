@@ -56,22 +56,42 @@ jobs:
           set -euo pipefail
           RUN=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/export-roxy-voice.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs | map(select(.head_sha == "b4717ca074d66b0e2913384546edfb4c9431ca67")) | .[0].id // empty')
           if [[ ! "$RUN" =~ ^[0-9]+$ ]]; then
-            echo 'No successful export run found for the validated commit. No model will be rebuilt or silently substituted.' >&2
+            echo 'No successful validated export found. No model will be rebuilt or substituted.' >&2
             exit 1
           fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq '.head_sha == "b4717ca074d66b0e2913384546edfb4c9431ca67" and .conclusion == "success" and .head_branch == "main"' | grep -qx true
           gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name roxy-synthesizer-onnx --dir voice-model
           echo "SOURCE_EXPORT_RUN_ID=$RUN" >> "$GITHUB_ENV"
-      - name: Install CPU sentence-test dependencies
+      - name: Retrieve the exact listening-approved baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends espeak-ng
+          set -euo pipefail
+          test ! -e approved-baseline
+          RUNS=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/generate-roxy-baseline.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs[] | select(.head_sha == "cb9570a2713815c28145c0165c98fbb6c19f988e") | .id')
+          for RUN in $RUNS; do
+            [[ "$RUN" =~ ^[0-9]+$ ]] || exit 1
+            DIR=$(mktemp -d)
+            if gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name roxy-neural-baseline --dir "$DIR" && [[ -f "$DIR/baseline.wav" ]]; then
+              HASH=$(sha256sum "$DIR/baseline.wav" | cut -d ' ' -f 1)
+              if [[ "$HASH" == de8acd0cbe94d72d8e3d0780368ac53aacfcf99e40581f2848748a465cfda56f ]]; then
+                mv "$DIR" approved-baseline
+                echo "SOURCE_BASELINE_RUN_ID=$RUN" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            fi
+            rm -rf -- "$DIR"
+          done
+          echo 'The exact approved baseline artifact is unavailable. Refusing to regenerate or substitute speech.' >&2
+          exit 1
+      - name: Install CPU conversion dependencies
+        run: |
           python -m pip install --upgrade pip
           python -m pip install --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu 'torch>=2.6'
           python -m pip install --only-binary=:all: numpy scipy onnxruntime 'transformers>=4.45,<5' praat-parselmouth
           python -m pip freeze > voice-sample/python-packages.txt
-      - name: Convert one generated baseline sentence
-        run: python tools/test_roxy_sentence.py --model-dir voice-model --upstream vendor-rvc
+      - name: Convert the checksum-pinned approved baseline
+        run: python tools/test_roxy_sentence.py --model-dir voice-model --upstream vendor-rvc --baseline-dir approved-baseline
       - name: Upload small diagnostic report
         if: always()
         uses: actions/upload-artifact@v7
@@ -83,7 +103,7 @@ jobs:
             voice-sample/python-packages.txt
           if-no-files-found: warn
           retention-days: 7
-      - name: Upload baseline and candidate WAV only after successful conversion
+      - name: Upload unchanged baseline and converted candidate
         if: success()
         uses: actions/upload-artifact@v7
         with:
@@ -91,5 +111,7 @@ jobs:
           path: |
             voice-sample/baseline.wav
             voice-sample/candidate_*.wav
+            voice-sample/approved-baseline-manifest.json
+            voice-sample/VOICE_MODEL_CARD.txt
           if-no-files-found: error
           retention-days: 7

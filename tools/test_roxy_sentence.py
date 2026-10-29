@@ -1,10 +1,11 @@
-"""Standalone candidate sentence conversion; no Android changes or identity claim."""
+"""Convert the exact listening-approved baseline; no Android or identity claim."""
 import argparse
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ import urllib.request
 OUT = Path('voice-sample')
 UPSTREAM = '81eed5e8f68b6bed1789f682fe78cdd324495afc'
 MODEL_SHA = 'a35a143a9314f80252163581eab9b643987e35ff982027f11e609e3daeb55889'
+APPROVED_BASELINE_SHA = 'de8acd0cbe94d72d8e3d0780368ac53aacfcf99e40581f2848748a465cfda56f'
 ASSET_REV = 'e6d0c1a17da07c33557852f9dfa2bd44cc75737d'
 ASSET_BASE = 'https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/' + ASSET_REV + '/hubert_base/'
 ASSETS = {
@@ -31,6 +33,28 @@ def digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def prepare_baseline(directory, destination):
+    source = Path(directory) / 'baseline.wav'
+    manifest_path = Path(directory) / 'baseline-manifest.json'
+    if not 44 < source.stat().st_size < 2000000:
+        raise ValueError('Unexpected approved baseline size')
+    metadata = json.loads(manifest_path.read_text(encoding='utf-8'))
+    actual = digest(source)
+    if actual != APPROVED_BASELINE_SHA or metadata.get('wav_sha256') != APPROVED_BASELINE_SHA:
+        raise ValueError('Baseline differs from the exact WAV approved by the user')
+    expected = {'success': True, 'sentence': SENTENCE, 'voice': 'en_US-lessac-medium', 'voice_revision': '5041a7a49ae5b3a0f30e6837769eb03fdbb231bd', 'sample_rate': 22050, 'channels': 1}
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        raise ValueError('Approved baseline metadata mismatch')
+    shutil.copyfile(source, destination)
+    if digest(destination) != actual:
+        raise ValueError('Copied baseline checksum mismatch')
+    shutil.copyfile(manifest_path, destination.with_name('approved-baseline-manifest.json'))
+    card = Path(directory) / 'VOICE_MODEL_CARD.txt'
+    if card.is_file():
+        shutil.copyfile(card, destination.with_name('VOICE_MODEL_CARD.txt'))
+    return {'baseline_voice': 'Piper en_US-lessac-medium; exact user-approved WAV', 'baseline_sha256': actual, 'baseline_listening_approved': True, 'baseline_regenerated': False, 'source_baseline_run_id': os.environ.get('SOURCE_BASELINE_RUN_ID')}
 
 
 def download_assets(directory):
@@ -100,12 +124,12 @@ def convert(args, report):
             raise ValueError('Unexpected input contract: ' + name)
     report.update(model_sha256=MODEL_SHA, source_export_run_id=os.environ.get('SOURCE_EXPORT_RUN_ID'), speaker_id=args.speaker_id, pitch_shift_semitones=args.pitch_shift)
 
-    report['stage'] = 'generate_baseline_sentence'
+    report['stage'] = 'verify_listening_approved_baseline'
     baseline = OUT / 'baseline.wav'
-    subprocess.run(['espeak-ng', '-v', 'en-us+f3', '-s', '155', '-p', '55', '-w', str(baseline), SENTENCE], check=True, timeout=60)
+    report.update(prepare_baseline(args.baseline_dir, baseline))
     sr, pcm = wavfile.read(baseline)
-    if pcm.dtype != np.int16 or pcm.ndim != 1 or not 0.5 <= len(pcm) / sr <= 8:
-        raise ValueError('Baseline must be short mono 16-bit speech')
+    if sr != 22050 or pcm.dtype != np.int16 or pcm.ndim != 1 or not 0.5 <= len(pcm) / sr <= 8:
+        raise ValueError('Baseline must be the approved short mono 16-bit 22050-Hz speech')
     audio = pcm.astype(np.float32) / 32768
     divisor = math.gcd(int(sr), 16000)
     audio = signal.resample_poly(audio, 16000 // divisor, int(sr) // divisor).astype(np.float32)
@@ -116,7 +140,7 @@ def convert(args, report):
     b, a = signal.butter(5, 48, btype='high', fs=16000)
     audio = signal.filtfilt(b, a, audio).astype(np.float32)
     padded = np.pad(audio, (16000, 16000), mode='reflect')
-    report.update(sentence=SENTENCE, baseline_voice='espeak-ng en-us+f3, speed 155, pitch 55', baseline_seconds=len(pcm) / sr, baseline_sha256=digest(baseline))
+    report.update(sentence=SENTENCE, baseline_seconds=len(pcm) / sr)
 
     report['stage'] = 'verified_content_encoder_download_and_load'
     with tempfile.TemporaryDirectory(prefix='roxy-content-') as temporary:
@@ -209,10 +233,10 @@ def save_report(report):
     OUT.mkdir(exist_ok=True)
     (OUT / 'sentence-report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     lines = ['ROXY CANDIDATE SENTENCE TEST', 'Result: ' + ('CANDIDATE WAV CREATED' if report.get('success') else 'NOT COMPLETED'), 'Stage: ' + report.get('stage', 'unknown')]
-    for key in ['sentence', 'speaker_id', 'pitch_shift_semitones', 'baseline_seconds', 'frames', 'raw_voiced_fraction', 'output_file', 'output_seconds', 'synthesizer_seconds', 'feature_pitch_and_synthesis_seconds', 'wall_seconds', 'error']:
+    for key in ['sentence', 'speaker_id', 'pitch_shift_semitones', 'baseline_voice', 'baseline_sha256', 'baseline_listening_approved', 'baseline_regenerated', 'source_baseline_run_id', 'baseline_seconds', 'frames', 'raw_voiced_fraction', 'output_file', 'output_seconds', 'synthesizer_seconds', 'feature_pitch_and_synthesis_seconds', 'wall_seconds', 'error']:
         if key in report:
             lines.append(key + ': ' + str(report[key]))
-    lines += ['Speaker identity is unconfirmed. Numerical success does not verify Roxanne likeness or intelligibility.', 'No retrieval index, Android changes or phone-speed claim. Baseline is deliberately basic offline TTS. Start playback at low volume.']
+    lines += ['Speaker identity is unconfirmed. Numerical success does not verify Roxanne likeness or intelligibility.', 'No retrieval index, Android changes or phone-speed claim. Source WAV is checksum-pinned to the listening-approved baseline; standard conversion preprocessing is unchanged. Start playback at low volume.']
     text = '\n'.join(lines) + '\n'
     (OUT / 'sentence-report.txt').write_text(text, encoding='utf-8')
     print(text)
@@ -227,10 +251,11 @@ def main():
     parser.add_argument('--initialize', action='store_true')
     parser.add_argument('--model-dir', default='voice-model')
     parser.add_argument('--upstream', default='vendor-rvc')
+    parser.add_argument('--baseline-dir', default='approved-baseline')
     parser.add_argument('--speaker-id', type=int, default=int(os.environ.get('SPEAKER_ID', '0')))
     parser.add_argument('--pitch-shift', type=int, default=int(os.environ.get('PITCH_SHIFT', '0')))
     args = parser.parse_args()
-    report = {'success': False, 'stage': 'not_started_check_dependency_or_artifact_step', 'android_app_changed': False, 'speaker_identity_confirmed': False, 'model_sha256_expected': MODEL_SHA, 'upstream_commit': UPSTREAM, 'content_asset_revision': ASSET_REV}
+    report = {'success': False, 'stage': 'not_started_check_dependency_or_artifact_step', 'android_app_changed': False, 'speaker_identity_confirmed': False, 'model_sha256_expected': MODEL_SHA, 'baseline_sha256_expected': APPROVED_BASELINE_SHA, 'upstream_commit': UPSTREAM, 'content_asset_revision': ASSET_REV}
     if args.initialize:
         save_report(report)
         return
