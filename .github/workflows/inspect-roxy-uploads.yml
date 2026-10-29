@@ -1,0 +1,42 @@
+name: Inspect Roxy reference and alternate avatar
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-roxy-uploads.yml'
+      - 'tools/inspect_roxy_uploads.py'
+      - 'RoxyAreYouLost.ogg.ogx'
+      - 'Roxanne_Wolf_Toggle.glb'
+      - 'roxanne_wolf_security_breach.glb'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Initialize compact report
+        run: python tools/inspect_roxy_uploads.py --initialize
+      - name: Install audio inspection dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install --only-binary=:all: numpy praat-parselmouth
+          python -m pip freeze > upload-inspection/python-packages.txt
+      - name: Inspect reference and compare GLB structure
+        run: python tools/inspect_roxy_uploads.py
+      - name: Upload reference audio and inspection report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-upload-inspection
+          path: upload-inspection/
+          if-no-files-found: warn
+          retention-days: 7
