@@ -1,0 +1,81 @@
+name: Adjust Roxy baseline final rise
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/adjust-roxy-final-rise.yml'
+      - 'tools/adjust_roxy_final_rise.py'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  edit:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1'
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Initialize compact report
+        run: python tools/adjust_roxy_final_rise.py --initialize
+      - name: Retrieve exact selected baseline without regenerating
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test ! -e selected-calm
+          RUNS=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/compare-roxy-calm-baselines.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs[] | select(.head_sha == "32893d4e628f733ac21d58ac17dbcae4054c3b39") | .id')
+          for RUN in $RUNS; do
+            [[ "$RUN" =~ ^[0-9]+$ ]] || exit 1
+            DIR=$(mktemp -d)
+            if gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name roxy-calm-baselines --dir "$DIR" && [[ -f "$DIR/03_slowest_question.wav" ]]; then
+              HASH=$(sha256sum "$DIR/03_slowest_question.wav" | cut -d ' ' -f 1)
+              if [[ "$HASH" == 042d83110063ae6cf189325b138e7b5caf8ea96a011ead8be9e5815f5b7edc0d ]]; then
+                mv "$DIR" selected-calm
+                echo "SOURCE_CALM_RUN_ID=$RUN" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            fi
+            rm -rf -- "$DIR"
+          done
+          echo 'Exact preferred baseline artifact unavailable; refusing to regenerate.' >&2
+          exit 1
+      - name: Install CPU alignment and pitch-edit dependencies
+        run: |
+          python -m pip install --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu 'torch==2.8.0' 'torchaudio==2.8.0'
+          python -m pip install --only-binary=:all: numpy scipy praat-parselmouth
+          python -m pip freeze > final-rise/python-packages.txt
+      - name: Align lost and create localized pitch variants
+        run: python tools/adjust_roxy_final_rise.py
+      - name: Upload compact report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-final-rise-report
+          path: |
+            final-rise/report.txt
+            final-rise/report.json
+            final-rise/alignment.json
+            final-rise/python-packages.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload original and edited listening clips
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-final-rise-baselines
+          path: |
+            final-rise/*.wav
+            final-rise/pitch-edits.csv
+            final-rise/edit-manifest.json
+            final-rise/VOICE_MODEL_CARD.txt
+          if-no-files-found: error
+          retention-days: 7
