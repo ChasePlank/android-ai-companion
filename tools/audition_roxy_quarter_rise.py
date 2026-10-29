@@ -1,4 +1,4 @@
-"""Quarter local rise, small pitch-preserving slowdown, one RVC audition."""
+"""Gentle rising lost contour and localized word stretch, one RVC audition."""
 import argparse
 import hashlib
 import json
@@ -22,12 +22,19 @@ def digest(path):
     return h.hexdigest()
 
 
-def quarter_curve(times, hz, start, end, anchor):
+def lost_curve(times, hz, start, end, anchor):
     import numpy as np
-    edge = np.minimum(np.clip((times-start)/0.03, 0, 1), np.clip((end-times)/0.03, 0, 1))
-    gate = 0.5 - 0.5*np.cos(np.pi*edge)
-    rise = np.maximum(0, 12*np.log2(hz/anchor))
-    return hz*np.exp2(-np.minimum(9.0, 0.75*rise)*gate/12)
+    mask = (times >= start) & (times <= end)
+    selected = times[mask]
+    if len(selected) < 5 or selected[-1]-selected[0] < 0.04:
+        raise ValueError('Insufficient local pitch points')
+    u = np.clip((selected-selected[0])/(selected[-1]-selected[0]), 0, 1)
+    target = anchor*np.exp2((1.5*(u*u*(3-2*u)))/12)
+    entry = np.clip((selected-start)/0.03, 0, 1)
+    gate = 0.5-0.5*np.cos(np.pi*entry)
+    result = hz.copy()
+    result[mask] = hz[mask]*np.exp2(gate*np.log2(target/hz[mask]))
+    return result
 
 
 def audition(report):
@@ -64,10 +71,9 @@ def audition(report):
     if len(local) < 5 or not np.isfinite(hz).all() or np.any(hz <= 0) or np.max(np.abs(12*np.diff(np.log2(local)))) > 9:
         raise ValueError('Unreliable local pitch tier')
     anchor = float(np.median(local[:3]))
-    rise = float(np.max(12*np.log2(local/anchor)))
-    if not 0.5 <= rise <= 12 or abs(anchor-metadata['local_onset_anchor_hz']) > 1:
+    if abs(anchor-metadata['local_onset_anchor_hz']) > 1:
         raise ValueError('Local pitch analysis differs unexpectedly')
-    adjusted = quarter_curve(times, hz, start, end, anchor)
+    adjusted = lost_curve(times, hz, start, end, anchor)
     call(tier, 'Remove points between', 0, sound.duration)
     for t, frequency in zip(times, adjusted):
         call(tier, 'Add point', float(t), float(frequency))
@@ -78,27 +84,37 @@ def audition(report):
     i0, i1 = int(np.ceil(start*sr)), int(np.floor(end*sr))
     positions = np.arange(i0, i1)/sr
     edge = np.minimum(np.clip((positions-start)/0.03, 0, 1), np.clip((end-positions)/0.03, 0, 1))
-    blend = 0.5 - 0.5*np.cos(np.pi*edge)
+    blend = 0.5-0.5*np.cos(np.pi*edge)
     gain = min(1., 0.999/max(float(np.max(np.abs(resynthesized[i0:i1]))), 1e-12))
     mixed = audio[i0:i1]*(1-blend) + resynthesized[i0:i1]*gain*blend
     edited = pcm.copy()
     edited[i0:i1] = np.clip(np.rint(mixed*32768), -32768, 32767).astype(np.int16)
     if not np.array_equal(edited[:i0], pcm[:i0]) or not np.array_equal(edited[i1:], pcm[i1:]):
-        raise ValueError('Local edit changed samples outside estimated lost region')
+        raise ValueError('Local pitch edit changed samples outside estimated lost region')
     if np.array_equal(edited, pcm):
-        raise ValueError('Local edit had no effect')
+        raise ValueError('Local pitch edit had no effect')
+    word_end = min(end+0.08, len(pcm)/sr-0.05)
+    if not end < word_end < len(pcm)/sr:
+        raise ValueError('Insufficient room to preserve the final-consonant margin')
+    filters = (
+        f'[0:a]asplit=3[p0][w0][s0];[p0]atrim=end={start:.12f},asetpts=PTS-STARTPTS[p];'
+        f'[w0]atrim=start={start:.12f}:end={word_end:.12f},asetpts=PTS-STARTPTS,atempo=0.8[w];'
+        f'[s0]atrim=start={word_end:.12f},asetpts=PTS-STARTPTS[s];'
+        '[p][w]acrossfade=d=0.01:c1=tri:c2=tri[pw];'
+        '[pw][s]acrossfade=d=0.01:c1=tri:c2=tri,atempo=0.909090909091[out]'
+    )
     shutil.copyfile(reference, OUT / 'reference.wav')
-    report.update(original_baseline_sha256=ORIGINAL_SHA, reused_alignment=alignment, nominal_positive_rise_retained=0.25, pitch_cut_cap_semitones=9.0, prior_three_semitone_cap_removed=True, local_word_gain=gain, requested_duration_multiplier=1.10, piper_regenerated=False)
-    with tempfile.TemporaryDirectory(prefix='roxy-quarter-') as temporary:
+    report.update(original_baseline_sha256=ORIGINAL_SHA, reused_alignment=alignment, local_pitch_curve='smooth rise over voiced lost points', requested_word_rise_semitones=1.5, local_onset_anchor_hz=anchor, requested_word_duration_multiplier=1.25, final_consonant_margin_seconds=word_end-end, requested_global_duration_multiplier=1.10, crossfade_seconds=0.01, local_word_gain=gain, piper_regenerated=False, edits_stacked=False)
+    with tempfile.TemporaryDirectory(prefix='roxy-lost-') as temporary:
         directory = Path(temporary)
         pitch_path = directory / 'local-pitch.wav'
         stretched = directory / 'stretched.wav'
         wavfile.write(pitch_path, sr, edited)
-        report['stage'] = 'stretch_baseline_about_ten_percent'
-        subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', str(pitch_path), '-af', 'atempo=0.909090909091', '-c:a', 'pcm_s16le', '-y', str(stretched)], check=True, timeout=60, capture_output=True, text=True)
+        report['stage'] = 'lengthen_lost_with_consonant_margin_and_keep_global_slowdown'
+        subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', str(pitch_path), '-filter_complex', filters, '-map', '[out]', '-c:a', 'pcm_s16le', '-y', str(stretched)], check=True, timeout=60, capture_output=True, text=True)
         rate, values = wavfile.read(stretched)
-        if rate != sr or values.dtype != np.int16 or values.ndim != 1 or not 1.04 <= len(values)/len(pcm) <= 1.16:
-            raise ValueError('Tempo stretch differs unexpectedly from requested duration')
+        if rate != sr or values.dtype != np.int16 or values.ndim != 1 or not 1.10 <= len(values)/len(pcm) <= 1.35:
+            raise ValueError('Word/global stretch differs unexpectedly from requested duration')
         report.update(actual_baseline_duration_multiplier=len(values)/len(pcm), original_seconds=len(pcm)/sr, stretched_baseline_seconds=len(values)/sr, prepared_baseline_sha256=digest(stretched))
         import test_roxy_sentence as core
         previous = core.OUT, core.SENTENCE, core.prepare_baseline
@@ -108,7 +124,7 @@ def audition(report):
             shutil.copyfile(stretched, destination)
             if digest(destination) != report['prepared_baseline_sha256']:
                 raise ValueError('Prepared baseline copy mismatch')
-            return {'baseline_voice': 'Existing slow Piper clip, quarter local rise and about 10 percent longer', 'baseline_sha256': report['prepared_baseline_sha256'], 'baseline_regenerated': False, 'baseline_derived': True, 'baseline_listening_approved': False}
+            return {'baseline_voice': 'Original slow Piper clip, gentle rising lost curve and localized word stretch', 'baseline_sha256': report['prepared_baseline_sha256'], 'baseline_regenerated': False, 'baseline_derived': True, 'baseline_listening_approved': False}
         try:
             core.OUT, core.SENTENCE, core.prepare_baseline = OUT, 'Are you lost?', prepared_baseline
             settings = argparse.Namespace(model_dir='voice-model', upstream='vendor-rvc', baseline_dir=str(directory), speaker_id=0, pitch_shift=0)
@@ -126,18 +142,18 @@ def audition(report):
 
 def save(report):
     (OUT / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
-    lines = ['ROXY QUARTER-RISE AUDITION', 'Result: ' + ('REFERENCE AND CANDIDATE CREATED' if report.get('success') else 'NOT COMPLETED'), 'Stage: ' + report['stage']]
-    for key in ('nominal_positive_rise_retained', 'pitch_cut_cap_semitones', 'requested_duration_multiplier', 'actual_baseline_duration_multiplier', 'stretched_baseline_seconds', 'candidate_seconds', 'candidate_sha256', 'error'):
+    lines = ['ROXY LOST-DELIVERY AUDITION', 'Result: ' + ('REFERENCE AND CANDIDATE CREATED' if report.get('success') else 'NOT COMPLETED'), 'Stage: ' + report['stage']]
+    for key in ('requested_word_rise_semitones', 'requested_word_duration_multiplier', 'final_consonant_margin_seconds', 'requested_global_duration_multiplier', 'actual_baseline_duration_multiplier', 'stretched_baseline_seconds', 'candidate_seconds', 'candidate_sha256', 'error'):
         if key in report:
             lines.append(key + ': ' + str(report[key]))
-    lines += ['Two listening files only: reference.wav and candidate.wav.', '25 percent describes the requested positive local pitch excursion, with smooth boundaries and a 9-semitone cut safeguard; not a quarter of the whole voice pitch.', 'Tempo slowdown is applied to the edited baseline, not added silence. Converted timing and pitch still require listening; no accuracy guarantee.', 'Same ONNX, speaker ID 0 and zero added RVC pitch shift. No Piper regeneration, app changes or avatar changes.']
+    lines += ['Two listening files only: reference.wav and candidate.wav.', 'This replaces the previous 25-percent contour with a gentle requested +1.5-semitone rise through voiced lost. It does not stack pitch edits.', 'The estimated lost interval plus an 80-ms margin is stretched with atempo=0.8; 10-ms crossfades smooth joins, then the prior global slowdown is applied. Actual durations may differ slightly.', 'The margin is a safeguard, not verified phoneme alignment. Listen for the complete final consonants, natural joins and a slight upward movement; synthesis is not guaranteed accurate.', 'Same ONNX, speaker ID 0 and zero added RVC pitch shift. No Piper regeneration, app changes or avatar changes.']
     text = '\n'.join(lines) + '\n'
     (OUT / 'report.txt').write_text(text, encoding='utf-8')
     print(text)
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary:
         with open(summary, 'a', encoding='utf-8') as target:
-            target.write('## Quarter-rise audition\n\n```text\n' + text + '```\n')
+            target.write('## Localized lost-delivery audition\n\n```text\n' + text + '```\n')
 
 
 def main():
