@@ -28,6 +28,7 @@ import com.google.android.filament.utils.Utils
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.tan
@@ -132,6 +133,7 @@ object FloatingAvatarOverlay {
                             idle = facial
                             facial.setIdleEnabled(idleEnabled)
                             v.animator?.updateBoneMatrices()
+                            disableAvatarCulling(v)
                             // Cache anatomical pivots after normalization and calibrated body rest.
                             spine = findAnchor(v, "Spine", "Spine_jnt_03")
                             neck = findAnchor(v, "Neck", "Neck_jnt_05")
@@ -235,6 +237,7 @@ object FloatingAvatarOverlay {
                                     normalizedDepth = (4f * half[2] / extent).toDouble()
                                     require(normalizedWidth.isFinite() && normalizedWidth >= 0.0 && normalizedHeight.isFinite() && normalizedHeight > 0.0 && normalizedDepth.isFinite() && normalizedDepth >= 0.0) { "Invalid normalized bounds" }
                                     v.transformToUnitCube()
+                                    disableAvatarCulling(v)
                                     loaded = true; rigNote = "Geometry loaded; resources pending"
                                 } catch (error: Exception) { fail(error) }
                             }
@@ -242,6 +245,47 @@ object FloatingAvatarOverlay {
                     } catch (error: Exception) { main.post { if (!closed) fail(error) } }
                 }, "read-floating-roxanne").start()
             } catch (error: Exception) { fail(error) }
+        }
+
+        private fun disableAvatarCulling(v: ModelViewer) {
+            val asset = v.asset ?: return
+            val rm = v.engine.renderableManager
+            for (entity in asset.entities) {
+                val instance = rm.getInstance(entity)
+                // Bypass suspect skinning bounds only; leave materials, layers and shadows alone.
+                if (instance != 0) rm.setCulling(instance, false)
+            }
+        }
+
+        private fun renderableBoundsReport(v: ModelViewer): String = buildString {
+            val asset = v.asset ?: return@buildString
+            val rm = v.engine.renderableManager
+            val tm = v.engine.transformManager
+            var count = 0
+            var disabled = 0
+            val details = StringBuilder()
+            for (entity in asset.entities) {
+                val instance = rm.getInstance(entity)
+                if (instance == 0) continue
+                count++
+                val culling = rm.isCullingEnabled(instance)
+                if (!culling) disabled++
+                val box = rm.getAxisAlignedBoundingBox(instance, null)
+                val center = box.center
+                val half = box.halfExtent
+                details.append("${asset.getName(entity) ?: "Unnamed"} [entity $entity]: frustumCulling=$culling; primitives=${rm.getPrimitiveCount(instance)}\n")
+                details.append("  local bounds center=${center.contentToString()}; halfExtent=${half.contentToString()}\n")
+                val transform = tm.getInstance(entity)
+                if (transform != 0) {
+                    val world = FloatArray(16).also { tm.getWorldTransform(transform, it) }
+                    val worldCenter = FloatArray(3) { row -> world[row] * center[0] + world[4 + row] * center[1] + world[8 + row] * center[2] + world[12 + row] }
+                    val worldHalf = FloatArray(3) { row -> abs(world[row]) * half[0] + abs(world[4 + row]) * half[1] + abs(world[8 + row]) * half[2] }
+                    details.append("  world bounds center=${worldCenter.contentToString()}; halfExtent=${worldHalf.contentToString()}\n")
+                } else details.append("  World transform unavailable\n")
+            }
+            append("Frustum culling disabled=$disabled / $count renderables (queried flags)\n")
+            append("Bounds below are stored CPU boxes, not measured skinned vertex positions.\n")
+            append(details)
         }
 
         private fun findAnchor(v: ModelViewer, base: String, preferred: String): Anchor {
@@ -296,7 +340,8 @@ object FloatingAvatarOverlay {
             val nativeFrame = surface.holder.surfaceFrame
             var components = 0
             v?.asset?.let { asset -> for (entity in asset.entities) if (v.engine.renderableManager.getInstance(entity) != 0) components++ }
-            return "OVERLAY DIAGNOSTICS v3\nAvatar-only window=120 x 242 dp\nRenderer target=SurfaceView; transparent surface; on-top stacking\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (chest) "chest / neck" else "Fit / spine"}\nSpine anchor=$spine\nNeck anchor=$neck\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\n$cameraNote\nChest zoom=$zoom; horizontalStep=$horizontalStep; verticalStep=$verticalStep\nIdle=$idleEnabled; diagnostic background=$debugBackground\nDrag anywhere; hold still to remove. Settings are in the app.\n"
+            val boundsReport = v?.let { renderableBoundsReport(it) } ?: "Renderer unavailable\n"
+            return "OVERLAY DIAGNOSTICS v4\nAvatar-only window=120 x 242 dp\nRenderer target=SurfaceView; transparent surface; on-top stacking\nLoaded=$loaded; resourceReady=$ready\n$rigNote\nRender calls: $rendered successful / $attempts attempted\nA successful call does not prove visible model pixels.\nSurfaceView: ${surface.width} x ${surface.height}; nativeValid=${surface.holder.surface.isValid}; attached=${surface.isAttachedToWindow}\nNative surface frame: ${nativeFrame.width()} x ${nativeFrame.height()}\nFilament viewport: ${viewport?.width} x ${viewport?.height}\nDisplay=${surface.display?.state}; interactive=${power.isInteractive}\nRenderable components=$components; loadProgress=${v?.progress}\nMode=${if (chest) "chest / neck" else "Fit / spine"}\nSpine anchor=$spine\nNeck anchor=$neck\nNormalized size=$normalizedWidth, $normalizedHeight, $normalizedDepth\n$cameraNote\nChest zoom=$zoom; horizontalStep=$horizontalStep; verticalStep=$verticalStep\nIdle=$idleEnabled; diagnostic background=$debugBackground\n$boundsReport\nDrag anywhere; hold still to remove. Settings are in the app.\n"
         }
 
         private fun applyRestingJaw(v: ModelViewer): Boolean {
