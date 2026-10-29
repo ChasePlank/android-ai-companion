@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e selected-rise
-          RUNS=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/adjust-roxy-final-rise.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs[] | select(.head_sha == "9dcaa110a801ab3c4c8b06df9ea193411252a3c2")) | .id')
+          RUNS=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/adjust-roxy-final-rise.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs[] | select(.head_sha == "9dcaa110a801ab3c4c8b06df9ea193411252a3c2") | .id')
           for RUN in $RUNS; do
             [[ "$RUN" =~ ^[0-9]+$ ]] || exit 1
             DIR=$(mktemp -d)
