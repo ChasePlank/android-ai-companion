@@ -1,0 +1,13 @@
+# Calm baseline-only delivery experiment
+
+The user reports that the candidate is too fast, has an inaccurate final pitch rise, and that Roxanne speaks more slowly when calm and faster when angry. This experiment targets the source baseline first. It does not convert speech or implement emotional behavior in the app.
+
+Actions > Compare Roxy calm baselines creates 00_reference.wav plus four newly generated Piper options: 01_control_question.wav (Are you lost?, length scale 1.0), 02_slower_question.wav (same question, 1.35), 03_slowest_question.wav (same question, 1.50), and 04_slower_period.wav (Are you lost., 1.35). The period changes the synthesis cue while keeping the spoken words; its effect on terminal intonation is experimental, not guaranteed. No phoneme overrides are introduced yet.
+
+Download roxy-calm-baselines. Compare 01, 02 and 03 for articulation pace, and 02 versus 04 for the punctuation cue. Listen against 00_reference.wav at a comfortable volume. Pick the closest baseline or reject all of them; no sample is automatically approved. Save a preferred WAV and the manifest unchanged, so its exact checksum can be used in a later conversion. Download roxy-calm-baseline-report and paste report.txt if there is a problem.
+
+The same checksum-verified voice assets are loaded through the reviewed existing asset helper. A fresh CPU Piper session requests the same ONNX Runtime seed for each option and retains voice-default noise parameters. Exact reproducibility across library/platform versions is not claimed; hashes and package versions are recorded. Length scale controls phoneme synthesis duration rather than adding silence or post-processing the waveform. Native 22050-Hz PCM WAVs are preserved. There is no global pitch shift, time stretching, reference-pitch substitution or forced duration matching.
+
+The report includes durations, raw voiced-pitch CSVs and a rough energy-activity span, to distinguish articulation changes from leading/trailing quiet. The span uses 20-ms RMS windows and a relative threshold; it can miss quiet consonants and is not phoneme alignment. Pitch percentiles are not accent or likeness scores. Measurements do not establish that the assistant has listened to the clips.
+
+This separate job leaves previous baseline approvals, RVC tests, ONNX, avatars and Android code untouched. It runs automatically when its new helper/workflow changes, or manually, with CPU, read-only repository permissions, dependency downloads, normal Actions usage and a 15-minute timeout. Artifacts expire after seven days. The reference is decoded for comparison only; existing engine/voice/reference licensing limitations remain unresolved.

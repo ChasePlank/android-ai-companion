@@ -1,0 +1,57 @@
+name: Compare Roxy calm baselines
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/compare-roxy-calm-baselines.yml'
+      - 'tools/compare_roxy_calm_baselines.py'
+permissions:
+  contents: read
+jobs:
+  baselines:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Initialize compact report
+        run: python tools/compare_roxy_calm_baselines.py --initialize
+      - name: Install baseline-only dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install --only-binary=:all: piper-tts numpy praat-parselmouth
+          python -m pip freeze > calm-baselines/python-packages.txt
+      - name: Generate four baseline variants and measure reference
+        run: python tools/compare_roxy_calm_baselines.py
+      - name: Upload compact diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-calm-baseline-report
+          path: |
+            calm-baselines/report.txt
+            calm-baselines/report.json
+            calm-baselines/python-packages.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload separate listening clips and manifest
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-calm-baselines
+          path: |
+            calm-baselines/*.wav
+            calm-baselines/*-pitch.csv
+            calm-baselines/calm-baseline-manifest.json
+            calm-baselines/VOICE_MODEL_CARD.txt
+          if-no-files-found: error
+          retention-days: 7
