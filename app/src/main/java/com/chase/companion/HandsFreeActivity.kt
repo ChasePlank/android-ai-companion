@@ -59,7 +59,7 @@ class HandsFreeActivity : Activity() {
         fun button(value: String, action: () -> Unit) { panel.addView(Button(this).apply { text = value; setOnClickListener { action() } }) }
         text("Roxy hands-free — experimental local test")
         text("Not production 24/7 listening. Each opt-in session stops after 20 minutes. Uses repeated on-device speech-recognition sessions, NOT a dedicated low-power wake detector; gaps, battery drain and screen-off interruptions are possible. No cloud recognizer fallback. If local English recognition is unavailable, the test stops.")
-        text("Say Roxy or Roxanne followed by a question. Name alone opens the overlay and waits up to 12 seconds for a prompt. Roxy, hide / hide yourself hides only the overlay. Roxy, stop listening stops this service. Wake words must begin the recognized utterance. Other speech is discarded.")
+        text("Say Roxy or Roxanne followed by a question in one sentence. Partial wake results keep the same recognition session running; only final results send a prompt. If recognition ends after the name alone, the next session starts immediately and the avatar loads only after microphone readiness. There can still be provider restart gaps; audio from a closed session cannot be recovered. Name alone waits up to 12 seconds for a prompt. Roxy, hide / hide yourself hides only the overlay. Roxy, stop listening stops this service. Wake words must begin the recognized utterance. Other speech is discarded.")
         text("Qwen still requires your existing phone-local server at 127.0.0.1:12434. Roxy's .pth/.index voice conversion is NOT connected. Replies are text-only unless you explicitly enable the ordinary offline TTS diagnostic below. Start this test while this screen is visible. Closing this screen does not intentionally stop the service; force-stop, reboot and system interruption are not recovered automatically.")
         panel.addView(Switch(this).apply {
             text = "Diagnostic ordinary offline TTS — NOT Roxy's voice"
@@ -108,6 +108,8 @@ class HandsFreeService : Service(), RecognitionListener {
     private var foreground = false
     private var destroyed = false
     private var recognizing = false
+    private var heardWakeInSession = false
+    private var showWhenMicReady = false
     private var busy = false
     private var speaking = false
     private var errors = 0
@@ -119,7 +121,7 @@ class HandsFreeService : Service(), RecognitionListener {
     private val restart = Runnable { listen() }
     private val recognitionTimeout = Runnable { end("Recognizer stopped responding. Test stopped; reopen controls to retry.") }
     private val testTimeout = Runnable { end("20-minute experimental session finished. Start another test from the app.") }
-    private val promptTimeout = Runnable { awaitUntil = 0L; phase("Prompt timed out; waiting for Roxy / Roxanne") }
+    private val promptTimeout = Runnable { awaitUntil = 0L; showWhenMicReady = false; phase("Prompt timed out; waiting for Roxy / Roxanne") }
     private val speechTimeout = Runnable { tts?.stop(); speechId?.let { finishSpeech(it) } }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -137,7 +139,7 @@ class HandsFreeService : Service(), RecognitionListener {
             recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this).also { it.setRecognitionListener(this) }
             initializeTts()
             main.postDelayed(testTimeout, 20 * 60 * 1000L)
-            schedule(300)
+            schedule(0)
         } catch (error: RuntimeException) { end("Start failed: ${error.javaClass.simpleName}: ${error.message}") }
         return START_NOT_STICKY
     }
@@ -153,21 +155,22 @@ class HandsFreeService : Service(), RecognitionListener {
         HandsFreeState.phase = message
         if (foreground) runCatching { getSystemService(NotificationManager::class.java).notify(812, notification(message)) }
     }
-    private fun schedule(delay: Long = 650) {
+    private fun schedule(delay: Long = 60) {
         main.removeCallbacks(restart)
         if (!destroyed && HandsFreeState.active && !busy && !speaking) main.postDelayed(restart, delay)
     }
     private fun listen() {
         if (destroyed || !HandsFreeState.active || busy || speaking || recognizing) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { end("Microphone permission revoked"); return }
-        if (awaitUntil != 0L && SystemClock.elapsedRealtime() >= awaitUntil) awaitUntil = 0L
-        phase(if (awaitUntil != 0L) "Listening for your prompt" else "Waiting for Roxy / Roxanne — experimental session")
+        if (awaitUntil != 0L && SystemClock.elapsedRealtime() >= awaitUntil) { awaitUntil = 0L; showWhenMicReady = false }
+        phase(if (awaitUntil != 0L) "Starting prompt microphone — not ready yet" else "Starting wake microphone — not ready yet")
         try {
-            recognizing = true
+            recognizing = true; heardWakeInSession = false
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
                 .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             recognizer?.startListening(intent)
             main.postDelayed(recognitionTimeout, 45000)
@@ -177,37 +180,43 @@ class HandsFreeService : Service(), RecognitionListener {
         if (destroyed || !recognizing) return
         recognizing = false; main.removeCallbacks(recognitionTimeout); errors = 0
         val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
-        handleText(text)
+        val wakeSeen = heardWakeInSession; heardWakeInSession = false
+        handleText(text, wakeSeen)
     }
-    private fun handleText(text: String) {
+    private fun handleText(text: String, wakeSeen: Boolean) {
         val match = wake.matchEntire(text)
         val prompt = when {
             match != null -> match.groupValues[2].trim()
+            // A partial result already heard the wake word in this same audio session.
+            wakeSeen && text.isNotBlank() -> text
             awaitUntil > SystemClock.elapsedRealtime() -> text
             else -> { schedule(); return }
         }
         if (prompt.isBlank()) {
-            if (match != null) {
-                FloatingAvatarOverlay.show(this)
+            if (match != null || wakeSeen) {
                 awaitUntil = SystemClock.elapsedRealtime() + 12000
+                showWhenMicReady = true
                 main.removeCallbacks(promptTimeout); main.postDelayed(promptTimeout, 12000)
-            }
-            schedule(); return
+                // Do not load the GLB or insert a 650-ms wait before reopening the microphone.
+                schedule(0)
+            } else schedule()
+            return
         }
-        awaitUntil = 0L; main.removeCallbacks(promptTimeout)
+        awaitUntil = 0L; showWhenMicReady = false; main.removeCallbacks(promptTimeout)
         val command = prompt.lowercase(Locale.ROOT).trim().trimEnd('.', '!', '?', ',')
         when (command) {
             "hide", "hide yourself" -> { FloatingAvatarOverlay.hide(); phase("Avatar hidden; listening remains enabled"); schedule(); return }
             "show", "show yourself" -> { FloatingAvatarOverlay.show(this); schedule(); return }
             "stop listening" -> { end("Stopped by voice command"); return }
         }
+        // Prompt audio is finalized before expensive avatar initialization or Qwen work.
         FloatingAvatarOverlay.show(this)
         askQwen(prompt)
     }
     override fun onError(error: Int) {
         if (destroyed || !recognizing) return
-        recognizing = false; main.removeCallbacks(recognitionTimeout)
-        if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) { schedule(900); return }
+        recognizing = false; heardWakeInSession = false; main.removeCallbacks(recognitionTimeout)
+        if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) { schedule(300); return }
         errors++
         val fatal = error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS || error == SpeechRecognizer.ERROR_AUDIO ||
             error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED || error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
@@ -215,12 +224,31 @@ class HandsFreeService : Service(), RecognitionListener {
         if (fatal || errors >= 3) end("Local recognition error $error. Test stopped; check installed English speech support and microphone access. No cloud fallback.")
         else { phase("Local recognition error $error; retrying"); schedule(2500) }
     }
-    override fun onReadyForSpeech(params: Bundle?) {}
+    override fun onReadyForSpeech(params: Bundle?) {
+        if (destroyed || !recognizing) return
+        val awaiting = awaitUntil > SystemClock.elapsedRealtime()
+        phase(if (awaiting) "Microphone ready — speak your prompt" else "Microphone ready — waiting for Roxy / Roxanne")
+        if (showWhenMicReady && awaiting) {
+            showWhenMicReady = false
+            awaitUntil = SystemClock.elapsedRealtime() + 12000
+            main.removeCallbacks(promptTimeout); main.postDelayed(promptTimeout, 12000)
+            // Provider is already capturing audio before rendering setup blocks the UI thread.
+            FloatingAvatarOverlay.show(this)
+        }
+    }
     override fun onBeginningOfSpeech() {}
     override fun onRmsChanged(rmsdB: Float) {}
     override fun onBufferReceived(buffer: ByteArray?) {}
     override fun onEndOfSpeech() {}
-    override fun onPartialResults(partialResults: Bundle?) {}
+    override fun onPartialResults(partialResults: Bundle?) {
+        if (destroyed || !recognizing || busy || speaking) return
+        val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
+        if (!heardWakeInSession && wake.matches(text)) {
+            heardWakeInSession = true
+            phase("Wake heard — keep speaking in this same session")
+            // No cancel, stop, restart, overlay initialization or Qwen request on partial text.
+        }
+    }
     override fun onEvent(eventType: Int, params: Bundle?) {}
 
     private fun askQwen(prompt: String) {
@@ -308,12 +336,13 @@ class HandsFreeService : Service(), RecognitionListener {
     private fun finishSpeech(id: String) {
         SpeechJawState.finished(id)
         if (id != speechId) return
-        speechId = null; speaking = false; main.removeCallbacks(speechTimeout); schedule(900)
+        speechId = null; speaking = false; main.removeCallbacks(speechTimeout); schedule(350)
     }
     private fun end(reason: String) { HandsFreeState.phase = reason; cleanup(); stopSelf() }
     private fun cleanup() {
         if (destroyed) return
         destroyed = true; HandsFreeState.active = false; recognizing = false
+        heardWakeInSession = false; showWhenMicReady = false; awaitUntil = 0L
         main.removeCallbacksAndMessages(null)
         runCatching { recognizer?.cancel(); recognizer?.destroy() }; recognizer = null
         speechId?.let { SpeechJawState.finished(it) }; speechId = null
