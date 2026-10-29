@@ -35,7 +35,7 @@ jobs:
               'keytarButton.isEnabled = applyKeytarVisibility(v)': 'keytarButton.isEnabled = false',
               '            bindKeytar(v)': '            keytarEntity = null // No original-model visibility assumptions',
               'centerNote = centerUpperTorso(v)': 'centerNote = "Whole-model bounds framing; head-based recentering disabled."',
-              'inspection.text = "$modelReport': 'inspection.text = "Renderable entities: ${asset.entities.count { v.engine.renderableManager.getInstance(it) != 0 }}\nBounds center: ${asset.boundingBox.center.joinToString()}\nBounds half extents: ${asset.boundingBox.halfExtent.joinToString()}\n$modelReport',
+              'inspection.text = "$modelReport': r'inspection.text = "Renderable entities: ${asset.entities.count { v.engine.renderableManager.getInstance(it) != 0 }}\nBounds center: ${asset.boundingBox.center.joinToString()}\nBounds half extents: ${asset.boundingBox.halfExtent.joinToString()}\n$modelReport',
               'Ready. ${jointNames.size} transform nodes.': 'Loaded (visibility not verified). ${jointNames.size} transform nodes.',
               'Roxanne — full rig inspection': 'Alongside — fixed model framing test',
               'Loading bundled Roxanne model…': 'Loading fixed toggle model for node testing…',
