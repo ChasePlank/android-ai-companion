@@ -1,0 +1,120 @@
+name: Confirm selected Roxy voice and fixed avatar
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/confirm-roxy-voice-and-toggle.yml'
+      - 'tools/confirm_roxy_voice_and_toggle.py'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  voice:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1'
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Initialize voice report
+        run: python tools/confirm_roxy_voice_and_toggle.py --mode voice --initialize
+      - name: Check out pinned RVC source
+        uses: actions/checkout@v6
+        with:
+          repository: RVC-Project/Retrieval-based-Voice-Conversion-WebUI
+          ref: 81eed5e8f68b6bed1789f682fe78cdd324495afc
+          path: vendor-rvc
+          persist-credentials: false
+          sparse-checkout: |
+            infer/module
+            LICENSE
+      - name: Retrieve validated synthesizer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/export-roxy-voice.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs | map(select(.head_sha == "b4717ca074d66b0e2913384546edfb4c9431ca67")) | .[0].id // empty')
+          [[ "$RUN" =~ ^[0-9]+$ ]] || exit 1
+          gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name roxy-synthesizer-onnx --dir voice-model
+          echo "SOURCE_EXPORT_RUN_ID=$RUN" >> "$GITHUB_ENV"
+      - name: Retrieve exact selected 50-percent edit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test ! -e selected-rise
+          RUNS=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/adjust-roxy-final-rise.yml/runs" -f status=success -f branch=main -f per_page=100 --jq '.workflow_runs[] | select(.head_sha == "9dcaa110a801ab3c4c8b06df9ea193411252a3c2")) | .id')
+          for RUN in $RUNS; do
+            [[ "$RUN" =~ ^[0-9]+$ ]] || exit 1
+            DIR=$(mktemp -d)
+            if gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name roxy-final-rise-baselines --dir "$DIR" && [[ -f "$DIR/03_gentler_rise_keep50.wav" ]]; then
+              HASH=$(sha256sum "$DIR/03_gentler_rise_keep50.wav" | cut -d ' ' -f 1)
+              if [[ "$HASH" == 990d780fb8a2bfa12b2ee849e19a134bc5f4225d7b255769894b9326c044a116 ]]; then
+                mv "$DIR" selected-rise
+                echo "SOURCE_RISE_RUN_ID=$RUN" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            fi
+            rm -rf -- "$DIR"
+          done
+          echo 'Exact selected edit artifact unavailable; refusing to regenerate or substitute.' >&2
+          exit 1
+      - name: Install CPU conversion dependencies
+        run: |
+          python -m pip install --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu 'torch>=2.6'
+          python -m pip install --only-binary=:all: numpy scipy onnxruntime 'transformers>=4.45,<5' praat-parselmouth
+          python -m pip freeze > selected-voice/python-packages.txt
+      - name: Convert selected edited WAV with unchanged settings
+        run: python tools/confirm_roxy_voice_and_toggle.py --mode voice
+      - name: Upload selected voice report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-selected-voice-report
+          path: selected-voice/report*
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload listening comparison
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-selected-voice-audio
+          path: |
+            selected-voice/baseline.wav
+            selected-voice/candidate_sid0_key0.wav
+            selected-voice/reference.wav
+            selected-voice/selected-edit-manifest.json
+            selected-voice/VOICE_MODEL_CARD.txt
+            selected-voice/python-packages.txt
+          if-no-files-found: error
+          retention-days: 7
+  avatar:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Inspect fixed avatar separately
+        run: python tools/confirm_roxy_voice_and_toggle.py --mode avatar
+      - name: Upload fixed toggle inspection
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: roxy-fixed-toggle-report
+          path: fixed-toggle/
+          if-no-files-found: warn
+          retention-days: 7
