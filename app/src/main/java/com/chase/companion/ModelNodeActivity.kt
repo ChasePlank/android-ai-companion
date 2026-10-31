@@ -158,7 +158,7 @@ class ModelNodeActivity : Activity() {
     private fun refreshNodes() {
         if (!::nodes.isInitialized) return
         val previous = nodes.selectedItem as? String
-        val terms = filter.text.toString().trim().split(Regex("\s+")).filter { it.isNotBlank() }
+        val terms = filter.text.toString().trim().split(Regex("\\s+")).filter { it.isNotBlank() }
         val labels = entities.keys.filter { label -> terms.all { label.contains(it, true) } }.sorted()
         nodes.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels.ifEmpty { listOf("No matching nodes") })
         if (labels.isNotEmpty()) nodes.setSelection(labels.indexOf(previous).coerceAtLeast(0))
