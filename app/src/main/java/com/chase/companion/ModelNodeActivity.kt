@@ -10,6 +10,7 @@ import android.view.*
 import android.widget.*
 import com.google.android.filament.IndirectLight
 import com.google.android.filament.Renderer
+import com.google.android.filament.utils.Manipulator
 import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
 import org.json.JSONArray
@@ -21,6 +22,8 @@ import java.security.MessageDigest
 class ModelNodeActivity : Activity() {
     private val models = listOf("roxanne_wolf_security_breach.glb", "fexa_blush_alt_nude.glb", "loona.glb")
     private var viewer: ModelViewer? = null
+    private var cameraControls: Manipulator? = null
+    private fun resetCameraView() { cameraControls?.let { it.jumpToBookmark(it.homeBookmark) } }
     private var light: IndirectLight? = null
     private var source: ByteBuffer? = null
     private var generation = 0
@@ -132,8 +135,9 @@ class ModelNodeActivity : Activity() {
             try { viewer?.let { v ->
                 v.animator?.updateBoneMatrices(); v.render(time)
                 if (loading && v.asset != null && v.progress >= 1f) {
+                    resetCameraView()
                     loading = false; ready = true; refreshNodes()
-                    status.text = "${models[selectedModel]}: ${entities.size} transforms; ${v.animator?.animationCount ?: 0} clips. Saved inspection defaults loaded; overlay unchanged."
+                    status.text = "${models[selectedModel]}: ${entities.size} transforms; ${v.animator?.animationCount ?: 0} clips. Saved defaults loaded; camera reset; overlay unchanged."
                 }
             } } catch (e: Exception) { ready = false; loading = false; status.text = "Render error: ${e.message}. Reload model." }
             Choreographer.getInstance().postFrameCallback(this)
@@ -155,16 +159,17 @@ class ModelNodeActivity : Activity() {
             override fun onStartTrackingTouch(bar: SeekBar) {}
             override fun onStopTrackingTouch(bar: SeekBar) {}
         }
+        button("Reset camera view (keep pose)") { resetCameraView(); status.text = "Camera angle, pan and zoom reset. Model orientation, node poses and saved settings unchanged." }
         lightingNote = TextView(this); panel.addView(lightingNote)
         brightness = SeekBar(this).apply { max = 150 }; panel.addView(brightness)
         brightness.setOnSeekBarChangeListener(change { lightingLevels[models[selectedModel]] = it; applyLighting() })
         button("Reset lighting for this model") { lightingLevels.remove(models[selectedModel]); brightness.progress = defaultLighting(models[selectedModel]); applyLighting() }
         orientationNote = TextView(this); panel.addView(orientationNote)
-        orientationAxis = spinner(listOf("Orientation X", "Orientation Y", "Orientation Z"))
+        orientationAxis = spinner(listOf("Model orientation X", "Model orientation Y", "Model orientation Z"))
         orientationSlider = SeekBar(this).apply { max = 360; progress = 180 }; panel.addView(orientationSlider)
         orientationSlider.setOnSeekBarChangeListener(change { orientation[orientationAxis.selectedItemPosition.coerceIn(0, 2)] = (it - 180).toFloat(); applyOrientation(); sync() })
-        button("Set orientation default") { profile.put("orientation", array(orientation)); persist("Saved whole-model orientation default.") }
-        button("Reset orientation to saved default") { orientation = vector(profile.optJSONArray("orientation")); applyOrientation(); sync() }
+        button("Set model orientation default") { profile.put("orientation", array(orientation)); persist("Saved model rotation only; camera view is not saved.") }
+        button("Reset model orientation to saved default") { orientation = vector(profile.optJSONArray("orientation")); applyOrientation(); sync() }
         filter = EditText(this).apply { hint = "Filter nodes by name"; setSingleLine(true) }; panel.addView(filter)
         nodes = Spinner(this); panel.addView(nodes); axes = spinner(listOf("Local X", "Local Y", "Local Z"))
         detail = TextView(this).apply { setTextIsSelectable(true) }; panel.addView(detail)
@@ -190,7 +195,7 @@ class ModelNodeActivity : Activity() {
         button("Reset all nodes to defaults") { restoreNodes(); status.text = "All nodes restored in one batch; orientation and lighting unchanged." }
         button("Restore authored pose (keep saved defaults)") { restoreNodes(authored = true); orientation = FloatArray(3); applyOrientation(); sync(); status.text = "Authored pose restored for inspection. Saved defaults and limits retained." }
         panel.addView(Button(this).apply { text = "Recenter / reload selected model"; setOnClickListener { if (alive && selectedModel >= 0) requestModel(selectedModel) } })
-        panel.addView(TextView(this).apply { text = "Defaults and limits are stored on this phone per model-file hash. Node angles: local XYZ offsets, -90 to +90 degrees; orientation: -180 to +180 degrees. Set min/max captures the current selected-axis angle. Drag to orbit; pinch to zoom. Node names are not proof of function. No automatic facial animation or overlay changes." })
+        panel.addView(TextView(this).apply { text = "Dragging or pinching changes the camera, not saved model rotation. Reset camera view restores the standard viewpoint without changing poses. Switching models resets the camera. Model orientation and node defaults/limits remain stored separately per model-file hash. Node offsets: -90 to +90 degrees; model orientation: -180 to +180 degrees. No automatic facial animation or overlay changes." })
         root.addView(ScrollView(this).apply { addView(panel) }, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.42f).toInt())); setContentView(root)
         val listener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, position: Int, id: Long) { sync() }
@@ -206,16 +211,20 @@ class ModelNodeActivity : Activity() {
             override fun onViewAttachedToWindow(v: View) {}
             override fun onViewDetachedFromWindow(v: View) {
                 alive = false; generation++; Choreographer.getInstance().removeFrameCallback(frame)
-                viewer?.let { it.scene.indirectLight = null; light?.let { l -> it.engine.destroyIndirectLight(l) } }; light = null; viewer = null; source = null
+                viewer?.let { it.scene.indirectLight = null; light?.let { l -> it.engine.destroyIndirectLight(l) } }; light = null; viewer = null; source = null; cameraControls = null
             }
         })
         try {
-            Utils.init(); val v = ModelViewer(surfaceView = surface); viewer = v; v.autoPlayAnimations = false
+            Utils.init()
+            val orbit = Manipulator.Builder().targetPosition(0f, 0f, -4f).orbitHomePosition(0f, 0f, 0f).viewport(surface.width.coerceAtLeast(1), surface.height.coerceAtLeast(1)).build(Manipulator.Mode.ORBIT)
+            cameraControls = orbit
+            val v = ModelViewer(surfaceView = surface, manipulator = orbit); viewer = v; v.autoPlayAnimations = false
             v.renderer.clearOptions = Renderer.ClearOptions().apply { clear = true; discard = true; clearColor = doubleArrayOf(0.0, 0.0, 0.0, 1.0) }
             val lm = v.engine.lightManager; val instance = lm.getInstance(v.light)
             if (instance != 0) { originalKeyIntensity = lm.getIntensity(instance); lm.getDirection(instance, originalKeyDirection) }
             light = IndirectLight.Builder().irradiance(1, floatArrayOf(0.7f, 0.7f, 0.7f)).intensity(30000f).build(v.engine)
-            v.scene.indirectLight = light; surface.setOnTouchListener(v)
+            v.scene.indirectLight = light
+            surface.setOnTouchListener { view, event -> if (alive && ready && !loading) v.onTouch(view, event) else true }
             selector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, view: View?, position: Int, id: Long) { if (position != selectedModel) requestModel(position) }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
@@ -224,7 +233,9 @@ class ModelNodeActivity : Activity() {
     }
     private fun requestModel(index: Int) {
         val v = viewer ?: return; selectedModel = index; val ticket = ++generation
-        ready = false; loading = false; profileKey = ""; entities.clear(); keys.clear(); bases.clear(); offsets.clear(); refreshNodes()
+        ready = false; loading = false; profileKey = ""; profile = JSONObject(); orientation = FloatArray(3)
+        resetCameraView()
+        entities.clear(); keys.clear(); bases.clear(); offsets.clear(); refreshNodes()
         brightness.progress = lightingLevels[models[index]] ?: defaultLighting(models[index]); applyLighting(); status.text = "Loading ${models[index]}…"
         Thread({
             try {
@@ -276,7 +287,7 @@ class ModelNodeActivity : Activity() {
         }
         orientationSlider.isEnabled = ready; orientationAxis.isEnabled = ready
         orientationSlider.progress = orientation[orientationAxis.selectedItemPosition.coerceIn(0, 2)].toInt() + 180
-        orientationNote.text = "Whole-model orientation: X ${orientation[0]}° · Y ${orientation[1]}° · Z ${orientation[2]}°\nSaved: ${vector(profile.optJSONArray("orientation")).joinToString()} degrees"
+        orientationNote.text = if (!ready) "Model orientation: loading ${models.getOrNull(selectedModel) ?: "model"}…" else "${models[selectedModel]} model rotation (not camera): X ${orientation[0]}° · Y ${orientation[1]}° · Z ${orientation[2]}°\nSaved: ${vector(profile.optJSONArray("orientation")).joinToString()} degrees"
     }
     override fun onResume() { super.onResume(); resumed = true; Choreographer.getInstance().removeFrameCallback(frame); Choreographer.getInstance().postFrameCallback(frame) }
     override fun onPause() { resumed = false; Choreographer.getInstance().removeFrameCallback(frame); super.onPause() }
