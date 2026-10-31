@@ -1,0 +1,33 @@
+name: Apply Roxy screen behavior
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/apply-screen-behavior.yml']
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: apply-roxy-screen-behavior
+  cancel-in-progress: false
+jobs:
+  patch:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Apply checked source edits
+        run: python3 tools/apply_screen_behavior.py
+      - name: Commit navigation and launcher changes
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/chase/companion/AlongsideActivity.kt app/src/main/AndroidManifest.xml
+          git commit -m 'Default home to Roxy, require character selection per section, bypass recovery'
+          git push origin HEAD:main
+      - name: Start normal signed APK build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run android.yml --ref main
