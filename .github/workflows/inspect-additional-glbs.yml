@@ -1,0 +1,79 @@
+name: Inspect additional GLB avatars
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/inspect-additional-glbs.yml'
+      - 'classic_fexa.glb'
+      - 'fexa_blush_alt_nude.glb'
+      - 'loona.glb'
+      - 'shameless_loona_pose.glb'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect GLB structure without executing model content
+        shell: python
+        run: |
+          import json, struct, pathlib, hashlib, os
+          files = ['roxanne_wolf_security_breach.glb', 'classic_fexa.glb', 'fexa_blush_alt_nude.glb', 'loona.glb', 'shameless_loona_pose.glb']
+          out = pathlib.Path('glb-inspection'); out.mkdir(exist_ok=True)
+          reports = []
+          for name in files:
+              r = {'file': name}
+              try:
+                  data = pathlib.Path(name).read_bytes()
+                  magic, version, length = struct.unpack_from('<4sII', data)
+                  if magic != b'glTF' or version != 2 or length != len(data):
+                      raise ValueError('Invalid GLB v2 header or length')
+                  pos = 12; chunks = []
+                  while pos < length:
+                      size, kind = struct.unpack_from('<II', data, pos); pos += 8
+                      if size % 4 or pos + size > length:
+                          raise ValueError('Invalid chunk alignment or length')
+                      chunks.append((kind, data[pos:pos+size])); pos += size
+                  if not chunks or chunks[0][0] != 0x4E4F534A:
+                      raise ValueError('Missing first JSON chunk')
+                  g = json.loads(chunks[0][1])
+                  nodes = g.get('nodes', []); meshes = g.get('meshes', [])
+                  parents = {}
+                  for i, node in enumerate(nodes):
+                      for child in node.get('children', []):
+                          if not isinstance(child, int) or not 0 <= child < len(nodes):
+                              raise ValueError('Invalid child node index')
+                          parents.setdefault(child, []).append(i)
+                  r.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest(), asset=g.get('asset'), extensionsUsed=g.get('extensionsUsed', []), extensionsRequired=g.get('extensionsRequired', []), nodeCount=len(nodes), meshCount=len(meshes), materialCount=len(g.get('materials', [])), imageCount=len(g.get('images', [])))
+                  r['nodes'] = [dict(index=i, parents=parents.get(i, []), **n) for i, n in enumerate(nodes)]
+                  r['skins'] = g.get('skins', [])
+                  r['animations'] = g.get('animations', [])
+                  r['meshes'] = meshes
+                  r['materials'] = g.get('materials', [])
+                  r['images'] = g.get('images', [])
+                  r['externalResources'] = [x['uri'] for key in ['buffers', 'images'] for x in g.get(key, []) if 'uri' in x and not x['uri'].startswith('data:')]
+                  r['morphTargetCounts'] = [[len(p.get('targets', [])) for p in m.get('primitives', [])] for m in meshes]
+                  (out / (name + '.metadata.json')).write_text(json.dumps(g, indent=2))
+              except Exception as e:
+                  r['error'] = str(e)
+              reports.append(r)
+          (out / 'inspection.json').write_text(json.dumps(reports, indent=2))
+          lines = ['# Additional GLB structural inspection', '', 'Metadata only: no visual rendering, deformation validation, license clearance, or calibration compatibility is established.', '', '| Model | Bytes | Nodes | Meshes | Skins | Animations | Status |', '|---|---:|---:|---:|---:|---:|---|']
+          for r in reports:
+              lines.append('| {} | {} | {} | {} | {} | {} | {} |'.format(r['file'], r.get('bytes', ''), r.get('nodeCount', ''), r.get('meshCount', ''), len(r.get('skins', [])), len(r.get('animations', [])), r.get('error', 'Metadata parsed')))
+          summary = chr(10).join(lines)
+          (out / 'summary.md').write_text(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write(summary)
+          if any('error' in r for r in reports):
+              raise SystemExit('One or more GLBs failed inspection; see artifact')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: additional-glb-inspection
+          path: glb-inspection/
+          retention-days: 7
