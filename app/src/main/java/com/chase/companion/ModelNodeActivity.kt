@@ -75,7 +75,7 @@ class ModelNodeActivity : Activity() {
         detail = TextView(this).apply { setTextIsSelectable(true) }; panel.addView(detail)
         slider = SeekBar(this).apply { max = 180; progress = 90; isEnabled = false }; panel.addView(slider)
         panel.addView(Button(this).apply { text = "Reset selected node"; setOnClickListener { selectedEntity()?.let { offsets[it] = FloatArray(3); applyPose(it); sync() } } })
-        panel.addView(Button(this).apply { text = "Reset all nodes"; setOnClickListener { if (ready) { offsets.keys.toList().forEach { offsets[it] = FloatArray(3); applyPose(it) }; sync() } } })
+        panel.addView(Button(this).apply { text = "Reset all nodes"; setOnClickListener { resetAllNodes() } })
         panel.addView(Button(this).apply { text = "Recenter / reload selected model"; setOnClickListener { if (selectedModel >= 0) requestModel(selectedModel) } })
         panel.addView(TextView(this).apply { text = "Drag to orbit; pinch to zoom. All transform nodes are listed, not just bones. Start with small rotations. No automatic jaw, blink, gaze, rest offsets or clip playback. Models with no skin can still expose movable object/group transforms. This screen does not change the overlay avatar. Uploaded model rights are not verified." })
         root.addView(ScrollView(this).apply { addView(panel) }, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.38f).toInt()))
@@ -170,6 +170,37 @@ class ModelNodeActivity : Activity() {
         slider.isEnabled = xyz != null; axes.isEnabled = xyz != null
         slider.progress = (xyz?.get(axes.selectedItemPosition.coerceIn(0, 2)) ?: 0f).toInt() + 90
         detail.text = if (xyz == null) "No editable node selected" else "${nodes.selectedItem} / ${entities.size} total transforms\nX ${xyz[0]}° · Y ${xyz[1]}° · Z ${xyz[2]}°"
+    }
+    private fun resetAllNodes() {
+        if (!alive || !ready || loading) return
+        val v = viewer ?: return
+        val asset = v.asset ?: return
+        ready = false
+        sync()
+        try {
+            val tm = v.engine.transformManager
+            val currentEntities = asset.entities.toSet()
+            val restore = bases.entries.map { (entity, matrix) ->
+                check(entity in currentEntities) { "Node no longer belongs to loaded model: $entity" }
+                val instance = tm.getInstance(entity)
+                check(instance != 0) { "Missing transform: $entity" }
+                check(matrix.size == 16 && matrix.all { it.isFinite() }) { "Invalid cached transform: $entity" }
+                Triple(entity, instance, matrix.copyOf())
+            }
+            for ((entity, instance, matrix) in restore) {
+                tm.setTransform(instance, matrix)
+                offsets[entity] = FloatArray(3)
+            }
+            v.animator?.updateBoneMatrices()
+            ready = true
+            sync()
+            status.text = "Reset ${restore.size} nodes to cached authored transforms. Lighting and orientation unchanged."
+        } catch (e: Exception) {
+            android.util.Log.e("ModelNodeInspector", "Reset-all failed for ${models.getOrNull(selectedModel)}", e)
+            ready = false
+            sync()
+            status.text = "Reset failed: ${e.javaClass.simpleName}: ${e.message}. Reload this model before continuing."
+        }
     }
     private fun applyPose(entity: Int) {
         val v = viewer ?: return; val base = bases[entity] ?: return; val xyz = offsets[entity] ?: return
