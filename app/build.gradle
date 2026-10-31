@@ -41,7 +41,7 @@ dependencies {
  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
  implementation 'androidx.annotation:annotation:1.9.0'
 }
-def avatarFiles = ['roxanne_wolf_security_breach.glb', 'Roxanne_Wolf_Toggle.glb', 'Roxanne_Wolf_Toggle_fix.glb', 'classic_fexa.glb', 'fexa_blush_alt_nude.glb', 'loona.glb', 'shameless_loona_pose.glb']
+def avatarFiles = ['roxanne_wolf_security_breach.glb', 'fexa_blush_alt_nude.glb', 'loona.glb']
 def copyAvatar = tasks.register('copyAvatar', Sync) {
  avatarFiles.each { from(rootProject.file(it)) }
  into(layout.buildDirectory.dir('generated/avatarAssets'))
