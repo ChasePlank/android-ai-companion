@@ -11,7 +11,8 @@
  <activity android:name=".HandsFreeActivity" android:label="Roxy hands-free test" android:exported="false"/>
  <service android:name=".HandsFreeService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="microphone"/>
  <activity android:name=".LocalChatActivity" android:exported="false"/>
- <activity android:name=".AvatarPreviewActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+ <activity android:name=".AvatarPreviewActivity" android:exported="false"/>
+ <activity android:name=".ModelNodeActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
  <activity android:name=".VoiceTestActivity" android:label="Roxy Voice Test" android:exported="false"/>
  <activity android:name=".KeytarInspectionActivity" android:label="Keytar inspector" android:exported="false"/>
  </application>
