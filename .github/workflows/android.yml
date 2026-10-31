@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
+      - name: Apply and verify integrated companion behavior
+        run: python3 tools/apply_companion_behavior.py
       - uses: actions/setup-java@v5
         with:
           distribution: oracle
@@ -28,12 +30,9 @@ jobs:
           test -s "$keyfile"
           keytool -list -storetype JKS -keystore "$keyfile" -storepass android -alias androiddebugkey > /dev/null
           echo "COMPANION_SIGNING_KEYSTORE=$keyfile" >> "$GITHUB_ENV"
-          echo "Version code: $((GITHUB_RUN_NUMBER + 4))" >> "$GITHUB_STEP_SUMMARY"
       - name: Install Android API 36
-        shell: bash
         run: |
           set -euo pipefail
-          test -n "$ANDROID_HOME"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --install 'platforms;android-36'
           test -f "$ANDROID_HOME/platforms/android-36/android.jar"
       - name: Fetch and verify official Filament AARs
@@ -42,12 +41,7 @@ jobs:
         with:
           gradle-version: '9.8.2'
       - name: Assemble debug APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          java -version
-          gradle --version
-          gradle --no-daemon --console=plain --stacktrace :app:assembleDebug 2>&1 | tee "$RUNNER_TEMP/gradle-build.log"
+        run: gradle --no-daemon --console=plain --stacktrace :app:assembleDebug
       - name: Verify APK signing certificate
         shell: bash
         run: |
@@ -60,21 +54,19 @@ jobs:
           "$apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
           actual=$(sed -nE 's/^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | tr -d ':\r ' | tr '[:upper:]' '[:lower:]')
           count=$(grep -cE '^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest:' "$RUNNER_TEMP/apk-signature.txt" || true)
-          cat "$RUNNER_TEMP/apk-signature.txt"
           test "$count" = 1 && test "$actual" = "$expected" || { echo '::error::Signing mismatch; upload blocked.'; exit 1; }
-          {
-            echo '## Alongside multi-model node-inspection APK'
-            echo 'Dropdown includes all seven bundled GLBs. Manual local-axis node controls; authored rest poses.'
-            echo 'Original calibrated Roxanne preview and overlay retained. On-device appearance and deformation are not verified by build success.'
-            echo "Certificate SHA-256: $actual"
-            echo "APK SHA-256: $(sha256sum "$apk" | awk '{print $1}')"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'Roxy default, direct launcher, character-screen prompts, Settings controls and named overlays compiled; on-device behavior not yet verified.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
-          name: alongside-model-node-inspector-debug-${{ github.run_number }}
+          name: alongside-settings-and-cues-debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alongside-built-source-${{ github.run_number }}
+          path: |
+            app/src/main/AndroidManifest.xml
+            app/src/main/java/com/chase/companion/
       - name: Remove runner signing key
         if: always()
-        shell: bash
         run: rm -f "$RUNNER_TEMP/companion-signing.jks" "$RUNNER_TEMP/companion-cert.der"
