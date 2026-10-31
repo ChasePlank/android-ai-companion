@@ -13,7 +13,7 @@ replace('page in listOf("Full Rig Inspection", "Chat", "Animation Test", "Voice 
 replace('window.insetsController?.setSystemBarsAppearance', 'window.decorView.windowInsetsController?.setSystemBarsAppearance')
 start = s.index('    private fun back()')
 end = s.index('    private fun renderPage()', start)
-s = s[:start] + '''    private fun back() {
+s = s[:start] + """    private fun back() {
         if (page != "Full Rig Inspection") navigate("Full Rig Inspection") else finish()
     }
     @Deprecated("Activity navigation") override fun onBackPressed() { back() }
@@ -37,17 +37,15 @@ s = s[:start] + '''    private fun back() {
     private fun chooseCharacter(i: Int, next: String = page) {
         stopRequest(); intent.putExtra("character", i); intent.putExtra("page", next); recreate()
     }
-''' + s[end:]
+""" + s[end:]
 replace('            "Settings" -> settingsPage()', '            "Settings", "Character Settings" -> settingsPage()')
 replace('button(panel, "Chat") { navigate("Chat") }; toggle(panel, "Live animations", appPrefs.getBoolean(per("live"), true)) { v -> appPrefs.edit().putBoolean(per("live"), v).apply(); model { restoreNodes() } }', 'button(panel, "Chat") { navigate("Chat") }')
 replace('button(panel, "Change character") { stopRequest(); intent.removeExtra("character"); intent.removeExtra("page"); recreate() }', 'button(panel, "Change character") { promptCharacter(page) }')
-replace('        if (character >= 0) {
-            panel.addView(label("Only ${names[character]}\'s settings below", 18f));', '        if (page == "Settings") button(panel, "Character settings…") { navigate("Character Settings") }
+replace("""        if (character >= 0) {
+            panel.addView(label("Only ${names[character]}'s settings below", 18f));""", """        if (page == "Settings") button(panel, "Character settings…") { navigate("Character Settings") }
         if (page == "Character Settings" && character >= 0) {
-            panel.addView(label("Only ${names[character]}\'s settings below", 18f));')
+            panel.addView(label("Only ${names[character]}'s settings below", 18f));""")
 replace('intent.putExtra("page", "Settings"); recreate()', 'intent.putExtra("page", page); recreate()')
-if 'import android.text.Editable' not in s:
-    s = s.replace('import android.app.Activity\n', 'import android.app.Activity\nimport android.text.Editable\nimport android.text.TextWatcher\n', 1)
 m = Path('app/src/main/AndroidManifest.xml')
 manifest = m.read_text()
 old = '<activity android:name=".AlongsideActivity" android:exported="false" android:windowSoftInputMode="adjustResize"/>'
