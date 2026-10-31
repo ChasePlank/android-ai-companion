@@ -35,6 +35,30 @@ class ModelNodeActivity : Activity() {
     private lateinit var nodes: Spinner
     private lateinit var axes: Spinner
     private lateinit var slider: SeekBar
+    private lateinit var brightness: SeekBar
+    private lateinit var lightingNote: TextView
+    private var originalKeyIntensity = 100000f
+    private val originalKeyDirection = FloatArray(3)
+    private val lightingLevels = mutableMapOf<String, Int>()
+    private fun defaultLighting(name: String) = if (name == "loona.glb" || name == "classic_fexa.glb") 30 else 0
+    private fun applyLighting() {
+        val v = viewer ?: return
+        val name = models.getOrNull(selectedModel) ?: return
+        val level = lightingLevels[name] ?: defaultLighting(name)
+        val multiplier = 1f + level / 10f
+        light?.setIntensity(30000f * multiplier)
+        val lm = v.engine.lightManager
+        val instance = lm.getInstance(v.light)
+        if (instance != 0) {
+            lm.setIntensity(instance, originalKeyIntensity * multiplier)
+            if (name == "loona.glb" || name == "classic_fexa.glb") {
+                lm.setDirection(instance, 0f, -0.3f, -1f)
+            } else {
+                lm.setDirection(instance, originalKeyDirection[0], originalKeyDirection[1], originalKeyDirection[2])
+            }
+        }
+        lightingNote.text = "Inspection lighting: ${multiplier}x. Brightness changes no nodes or materials; settings last for this screen session."
+    }
     private val entities = linkedMapOf<String, Int>()
     private val bases = mutableMapOf<Int, FloatArray>()
     private val offsets = mutableMapOf<Int, FloatArray>()
@@ -69,6 +93,23 @@ class ModelNodeActivity : Activity() {
         status = TextView(this).apply { text = "Preparing renderer…" }; root.addView(status)
         val surface = SurfaceView(this); root.addView(surface, LinearLayout.LayoutParams(-1, 0, 1f))
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        lightingNote = TextView(this).apply { text = "Inspection lighting" }; panel.addView(lightingNote)
+        brightness = SeekBar(this).apply { max = 150; progress = 0 }; panel.addView(brightness)
+        brightness.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
+                if (fromUser && alive && selectedModel in models.indices) {
+                    lightingLevels[models[selectedModel]] = value
+                    applyLighting()
+                }
+            }
+            override fun onStartTrackingTouch(bar: SeekBar) {}
+            override fun onStopTrackingTouch(bar: SeekBar) {}
+        })
+        panel.addView(Button(this).apply { text = "Reset lighting for this model"; setOnClickListener {
+            models.getOrNull(selectedModel)?.let { name ->
+                lightingLevels.remove(name); brightness.progress = defaultLighting(name); applyLighting()
+            }
+        } })
         filter = EditText(this).apply { hint = "Filter nodes by name"; setSingleLine(true) }; panel.addView(filter)
         nodes = Spinner(this); panel.addView(nodes)
         axes = Spinner(this).apply { adapter = ArrayAdapter(this@ModelNodeActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Local X", "Local Y", "Local Z")) }; panel.addView(axes)
@@ -112,6 +153,12 @@ class ModelNodeActivity : Activity() {
             Utils.init()
             val v = ModelViewer(surfaceView = surface); viewer = v; v.autoPlayAnimations = false
             v.renderer.clearOptions = Renderer.ClearOptions().apply { clear = true; discard = true; clearColor = doubleArrayOf(0.0, 0.0, 0.0, 1.0) }
+            val lm = v.engine.lightManager
+            val keyInstance = lm.getInstance(v.light)
+            if (keyInstance != 0) {
+                originalKeyIntensity = lm.getIntensity(keyInstance)
+                lm.getDirection(keyInstance, originalKeyDirection)
+            }
             light = IndirectLight.Builder().irradiance(1, floatArrayOf(0.7f, 0.7f, 0.7f)).intensity(30000f).build(v.engine)
             v.scene.indirectLight = light; surface.setOnTouchListener(v)
             selector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -124,6 +171,8 @@ class ModelNodeActivity : Activity() {
     private fun requestModel(index: Int) {
         val v = viewer ?: return
         selectedModel = index; val ticket = ++generation
+        brightness.progress = lightingLevels[models[index]] ?: defaultLighting(models[index])
+        applyLighting()
         ready = false; loading = false; slider.isEnabled = false; axes.isEnabled = false; nodes.isEnabled = false
         entities.clear(); bases.clear(); offsets.clear(); refreshNodes()
         status.text = "Loading ${models[index]}…"
