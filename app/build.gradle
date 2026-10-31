@@ -26,7 +26,10 @@ android {
  }
  buildTypes { debug { signingConfig signingConfigs.debug } }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
- sourceSets { main { assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets').get().asFile) } }
+ sourceSets { main {
+  assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets').get().asFile)
+  res.srcDir(layout.buildDirectory.dir('generated/brandingRes').get().asFile)
+ } }
 }
 kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
 dependencies {
@@ -43,4 +46,12 @@ def copyAvatar = tasks.register('copyAvatar', Sync) {
  into(layout.buildDirectory.dir('generated/avatarAssets'))
  doFirst { if (!rootProject.file('roxanne_wolf_security_breach.glb').isFile()) throw new GradleException('Roxanne GLB missing at repository root') }
 }
-tasks.named('preBuild').configure { dependsOn(copyAvatar) }
+def copyBranding = tasks.register('copyBranding', Sync) {
+ from(rootProject.file('Alongside_crystalline_heart_br.jpeg')) {
+  rename { 'alongside_logo.jpg' }
+  into 'drawable-nodpi'
+ }
+ into(layout.buildDirectory.dir('generated/brandingRes'))
+ doFirst { if (!rootProject.file('Alongside_crystalline_heart_br.jpeg').isFile()) throw new GradleException('Alongside logo missing at repository root') }
+}
+tasks.named('preBuild').configure { dependsOn(copyAvatar, copyBranding) }
