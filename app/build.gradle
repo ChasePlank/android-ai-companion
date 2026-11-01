@@ -9,10 +9,22 @@ if (System.getenv('GITHUB_ACTIONS') == 'true' && !persistentKeystore) {
 if (persistentKeystore && !file(persistentKeystore).isFile()) {
  throw new GradleException('Persistent diagnostic keystore does not exist')
 }
+def offlineSetup = providers.exec {
+ workingDir rootProject.projectDir
+ commandLine 'python3', rootProject.file('tools/prepare_offline_ai.py').absolutePath
+}
+offlineSetup.result.get().assertNormalExitValue()
+logger.lifecycle(offlineSetup.standardOutput.asText.get())
 android {
  namespace 'com.chase.companion'
  compileSdk 36
- defaultConfig { applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode diagnosticVersionCode; versionName diagnosticVersionName }
+ defaultConfig {
+  applicationId 'com.chase.companion'; minSdk 29; targetSdk 36; versionCode diagnosticVersionCode; versionName diagnosticVersionName
+  ndk { abiFilters 'arm64-v8a' }
+  externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static' } }
+ }
+ externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt'); version '3.22.1' } }
+ androidResources { noCompress += ['gguf'] }
  signingConfigs {
   debug {
    if (persistentKeystore) {
@@ -28,6 +40,7 @@ android {
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
  sourceSets { main {
   assets.srcDir(layout.buildDirectory.dir('generated/avatarAssets').get().asFile)
+  assets.srcDir(rootProject.file('vendor/offline-assets'))
   res.srcDir(layout.buildDirectory.dir('generated/brandingRes').get().asFile)
  } }
 }
@@ -56,3 +69,13 @@ def copyBranding = tasks.register('copyBranding', Sync) {
  doFirst { if (!rootProject.file('Alongside_crystalline_heart_br.jpeg').isFile()) throw new GradleException('Alongside logo missing at repository root') }
 }
 tasks.named('preBuild').configure { dependsOn(copyAvatar, copyBranding) }
+tasks.matching { it.name == 'assembleDebug' }.configureEach {
+ doLast {
+  new java.util.zip.ZipFile(file('build/outputs/apk/debug/app-debug.apk')).withCloseable { apk ->
+   ['assets/offline/model.json', 'assets/offline/qwen3-0.6b-q4_k_m.gguf', 'assets/offline/MODEL-LICENSE.txt', 'assets/offline/LLAMA-LICENSE.txt', 'lib/arm64-v8a/libalongside_offline.so'].each {
+    if (apk.getEntry(it) == null) throw new GradleException('Offline APK component missing: ' + it)
+   }
+   logger.lifecycle('Verified bundled model, licenses and native offline inference library in APK.')
+  }
+ }
+}
