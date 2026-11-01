@@ -57,7 +57,7 @@ assert 'private fun promptCharacter' in s
 assert manifest.count('android.intent.category.LAUNCHER') == 1
 replace('profile.put("orientation", array(orientation)); save("orientation default saved")', 'val camera = PreviewCameraDefaults.capture(checkNotNull(orbit) { "Camera is not ready" }); profile.put("orientation", array(orientation)); profile.put("preview_camera", camera); save("orientation and camera default saved")')
 replace('orientation = vector(profile.optJSONArray("orientation")); applyOrientation(); renderPage()', 'orientation = vector(profile.optJSONArray("orientation")); applyOrientation(); orbit?.let { PreviewCameraDefaults.restore(it, profile.optJSONObject("preview_camera")) }; renderPage()')
-replace('orbit?.let { it.jumpToBookmark(it.homeBookmark) }', 'orbit?.let { if (!PreviewCameraDefaults.restore(it, profile.optJSONObject("preview_camera"))) it.jumpToBookmark(it.homeBookmark) }')
+replace('button(panel, "Reset camera view · keep pose") { orbit?.let { it.jumpToBookmark(it.homeBookmark) } }', 'button(panel, "Reset camera view · keep pose") { orbit?.let { if (!PreviewCameraDefaults.restore(it, profile.optJSONObject("preview_camera"))) it.jumpToBookmark(it.homeBookmark) } }')
 replace('initializeRenderer(surface!!) }; renderPage()', 'initializeRenderer(surface!!) }; renderPage(); schedulePreviewCameraRestore()')
 replace('private fun loadModel() {', 'private fun loadModel() { schedulePreviewCameraRestore();')
 replace('    private fun dp(v: Int)', """    private var previewRestoreSerial = 0
