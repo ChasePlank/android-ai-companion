@@ -11,6 +11,9 @@
 
 static std::atomic_bool stopped{false};
 static std::once_flag initialized;
+static std::mutex inference_mutex;
+static std::unique_ptr<llama_model, decltype(&llama_model_free)> cached_model(nullptr, llama_model_free);
+static std::string cached_path;
 using Clock = std::chrono::steady_clock;
 static double elapsed(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 static bool abort_run(void *) { return stopped.load(); }
@@ -28,16 +31,25 @@ static void set_batch(llama_batch_ext * b, const llama_token * tokens, int count
 }
 extern "C" JNIEXPORT void JNICALL Java_com_chase_companion_OfflineAi_resetNative(JNIEnv *, jclass) { stopped.store(false); }
 extern "C" JNIEXPORT void JNICALL Java_com_chase_companion_OfflineAi_cancelNative(JNIEnv *, jclass) { stopped.store(true); }
+// Call only after cancelling and awaiting the active worker. Contexts never persist.
+extern "C" JNIEXPORT void JNICALL Java_com_chase_companion_OfflineAi_releaseNative(JNIEnv *, jclass) {
+    std::lock_guard<std::mutex> lock(inference_mutex);
+    cached_model.reset();
+    cached_path.clear();
+}
 extern "C" JNIEXPORT jdoubleArray JNICALL Java_com_chase_companion_OfflineAi_runNative(JNIEnv * env, jclass, jstring filename, jbyteArray input, jint threads, jobject sink) {
+    std::lock_guard<std::mutex> lock(inference_mutex);
     try {
         check_stop();
         std::call_once(initialized, [] { llama_backend_init(); });
         jclass type = env->GetObjectClass(sink);
         jmethodID phase = env->GetMethodID(type, "phase", "(Ljava/lang/String;)V");
         jmethodID chunk = env->GetMethodID(type, "chunk", "([B)V");
+        env->DeleteLocalRef(type);
         if (env->ExceptionCheck()) return nullptr;
         auto status = [&](const char * text) {
             jstring message = env->NewStringUTF(text);
+            if (!message) throw std::runtime_error("Could not allocate status message");
             env->CallVoidMethod(sink, phase, message);
             env->DeleteLocalRef(message);
             if (env->ExceptionCheck()) throw std::runtime_error("Status callback failed");
@@ -49,14 +61,23 @@ extern "C" JNIEXPORT jdoubleArray JNICALL Java_com_chase_companion_OfflineAi_run
         env->GetByteArrayRegion(input, 0, user.size(), reinterpret_cast<jbyte *>(user.data()));
         if (env->ExceptionCheck()) return nullptr;
         std::string prompt = "<|im_start|>system\nYou are a helpful assistant. Answer briefly and honestly.<|im_end|>\n<|im_start|>user\n" + user + "\n/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
-        status("Loading bundled model on CPU...");
         auto started = Clock::now();
-        auto mp = llama_model_default_params();
-        mp.n_gpu_layers = 0; mp.progress_callback = load_progress;
-        std::unique_ptr<llama_model, decltype(&llama_model_free)> model(llama_model_load_from_file(path.c_str(), mp), llama_model_free);
+        if (!cached_model || cached_path != path) {
+            status("Loading bundled model on CPU...");
+            cached_model.reset();
+            cached_path.clear();
+            auto mp = llama_model_default_params();
+            mp.n_gpu_layers = 0; mp.progress_callback = load_progress;
+            std::unique_ptr<llama_model, decltype(&llama_model_free)> loaded(llama_model_load_from_file(path.c_str(), mp), llama_model_free);
+            check_stop();
+            if (!loaded) throw std::runtime_error("Could not load bundled model; check available memory");
+            cached_model = std::move(loaded);
+            cached_path = path;
+        } else {
+            status("Reusing resident bundled model; creating a fresh context...");
+        }
         check_stop();
-        if (!model) throw std::runtime_error("Could not load bundled model; check available memory");
-        const llama_vocab * vocab = llama_model_get_vocab(model.get());
+        const llama_vocab * vocab = llama_model_get_vocab(cached_model.get());
         int count = -llama_tokenize(vocab, prompt.data(), prompt.size(), nullptr, 0, false, true);
         if (count <= 0 || count > 768) throw std::runtime_error("Prompt is too long for the diagnostic context");
         std::vector<llama_token> tokens(count);
@@ -66,7 +87,7 @@ extern "C" JNIEXPORT jdoubleArray JNICALL Java_com_chase_companion_OfflineAi_run
         cp.n_ctx = 1024; cp.n_batch = 128; cp.n_ubatch = 64;
         cp.n_threads = cp.n_threads_batch = std::clamp<int>(threads, 1, 4);
         cp.abort_callback = abort_run;
-        std::unique_ptr<llama_context, decltype(&llama_free)> context(llama_init_from_model(model.get(), cp), llama_free);
+        std::unique_ptr<llama_context, decltype(&llama_free)> context(llama_init_from_model(cached_model.get(), cp), llama_free);
         if (!context) throw std::runtime_error("Could not allocate inference context");
         double load_ms = elapsed(started);
         std::unique_ptr<llama_batch_ext, decltype(&llama_batch_ext_free)> batch(llama_batch_ext_init(context.get()), llama_batch_ext_free);
