@@ -55,5 +55,27 @@ assert manifest.count(old) == 1 and manifest.count(recovery) == 1, 'Launcher cha
 manifest = manifest.replace(old, new, 1).replace(recovery, '<activity android:name=".RecoveryActivity" android:exported="false"/>', 1)
 assert 'private fun promptCharacter' in s
 assert manifest.count('android.intent.category.LAUNCHER') == 1
+replace('profile.put("orientation", array(orientation)); save("orientation default saved")', 'val camera = PreviewCameraDefaults.capture(checkNotNull(orbit) { "Camera is not ready" }); profile.put("orientation", array(orientation)); profile.put("preview_camera", camera); save("orientation and camera default saved")')
+replace('orientation = vector(profile.optJSONArray("orientation")); applyOrientation(); renderPage()', 'orientation = vector(profile.optJSONArray("orientation")); applyOrientation(); orbit?.let { PreviewCameraDefaults.restore(it, profile.optJSONObject("preview_camera")) }; renderPage()')
+replace('orbit?.let { it.jumpToBookmark(it.homeBookmark) }', 'orbit?.let { if (!PreviewCameraDefaults.restore(it, profile.optJSONObject("preview_camera"))) it.jumpToBookmark(it.homeBookmark) }')
+replace('initializeRenderer(surface!!) }; renderPage()', 'initializeRenderer(surface!!) }; renderPage(); schedulePreviewCameraRestore()')
+replace('private fun loadModel() {', 'private fun loadModel() { schedulePreviewCameraRestore();')
+replace('    private fun dp(v: Int)', """    private var previewRestoreSerial = 0
+    private fun schedulePreviewCameraRestore() {
+        val ticket = ++previewRestoreSerial
+        var attempts = 0
+        val poll = object : Runnable {
+            override fun run() {
+                if (!alive || ticket != previewRestoreSerial) return
+                if (!ready || orbit == null || profileKey.isEmpty()) {
+                    if (++attempts < 1200) window.decorView.postDelayed(this, 50)
+                    return
+                }
+                safe { orbit?.let { PreviewCameraDefaults.restore(it, profile.optJSONObject("preview_camera")) } }
+            }
+        }
+        window.decorView.post(poll)
+    }
+    private fun dp(v: Int)""")
 p.write_text(s)
 m.write_text(manifest)
