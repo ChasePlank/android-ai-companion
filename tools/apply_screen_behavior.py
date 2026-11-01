@@ -71,6 +71,22 @@ replace('    private fun dp(v: Int)', """    private var previewRestoreSerial = 
                     if (++attempts < 1200) window.decorView.postDelayed(this, 50)
                     return
                 }
+                safe {
+                    val v = checkNotNull(viewer)
+                    val asset = checkNotNull(v.asset)
+                    val rm = v.engine.renderableManager
+                    var count = 0
+                    for (entity in asset.entities) {
+                        val instance = rm.getInstance(entity)
+                        if (instance != 0) {
+                            rm.setCulling(instance, false)
+                            check(!rm.isCullingEnabled(instance)) { "Could not disable preview bounds culling" }
+                            count++
+                        }
+                    }
+                    check(count > 0) { "No preview renderables found" }
+                    status.text = "${names[character]} preview ready · bounds culling off ($count meshes)"
+                }
                 safe { orbit?.let { PreviewCameraDefaults.restore(it, profile.optJSONObject("preview_camera")) } }
             }
         }
