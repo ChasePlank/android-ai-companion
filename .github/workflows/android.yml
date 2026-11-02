@@ -13,6 +13,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Apply and verify integrated companion behavior
         run: python3 tools/apply_companion_behavior.py
+      - name: Stage inspection-only avatar variants
+        run: python3 tools/prepare_node_variants.py
       - uses: actions/setup-java@v5
         with:
           distribution: oracle
@@ -42,6 +44,8 @@ jobs:
           gradle-version: '9.8.2'
       - name: Assemble debug APK
         run: gradle --no-daemon --console=plain --stacktrace :app:assembleDebug
+      - name: Verify packaged inspection models
+        run: python3 tools/prepare_node_variants.py --verify-apk
       - name: Verify APK signing certificate
         shell: bash
         run: |
@@ -55,7 +59,7 @@ jobs:
           actual=$(sed -nE 's/^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | tr -d ':\r ' | tr '[:upper:]' '[:lower:]')
           count=$(grep -cE '^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest:' "$RUNNER_TEMP/apk-signature.txt" || true)
           test "$count" = 1 && test "$actual" = "$expected" || { echo '::error::Signing mismatch; upload blocked.'; exit 1; }
-          echo 'Roxy default, direct launcher, character-screen prompts, Settings controls and named overlays compiled; on-device behavior not yet verified.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Diagnostic APK compiled; variant node motion and rendering require device testing.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: alongside-settings-and-cues-debug-${{ github.run_number }}
