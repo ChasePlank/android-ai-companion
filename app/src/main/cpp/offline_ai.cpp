@@ -102,8 +102,12 @@ extern "C" JNIEXPORT jdoubleArray JNICALL Java_com_chase_companion_OfflineAi_run
         double prefill_ms = elapsed(prefill);
         std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sampler(llama_sampler_chain_init(llama_sampler_chain_default_params()), llama_sampler_free);
         if (!sampler) throw std::runtime_error("Could not allocate sampler");
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_greedy());
-        status("Generating locally; no server connection...");
+        llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_k(20));
+        llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(0.8f, 1));
+        llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.7f));
+        llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(42));
+        std::string config = "Generating locally; top-k=20 top-p=0.8 temperature=0.7 seed=42; threads=" + std::to_string(cp.n_threads) + "; prompt tokens=" + std::to_string(count);
+        status(config.c_str());
         auto generation = Clock::now();
         int generated = 0; double first_ms = -1;
         for (; generated < 128; ) {

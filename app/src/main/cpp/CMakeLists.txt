@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(alongside_offline LANGUAGES C CXX)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# Apply to the engine subdirectory as well as the JNI wrapper, including diagnostic APKs.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    add_compile_options(-O3)
+else()
+    message(FATAL_ERROR "Native optimization configuration requires Clang or GCC")
+endif()
+message(STATUS "Alongside native inference: explicit -O3; CPU backend; portable ARM baseline")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
