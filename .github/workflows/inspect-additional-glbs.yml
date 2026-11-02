@@ -4,10 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/inspect-additional-glbs.yml'
-      - 'classic_fexa.glb'
-      - 'fexa_blush_alt_nude.glb'
-      - 'loona.glb'
-      - 'shameless_loona_pose.glb'
+      - '*.glb'
 permissions:
   contents: read
 jobs:
@@ -18,59 +15,60 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Inspect GLB structure without executing model content
+      - name: Inventory all current GLB files
         shell: python
         run: |
-          import json, struct, pathlib, hashlib, os
-          files = ['roxanne_wolf_security_breach.glb', 'classic_fexa.glb', 'fexa_blush_alt_nude.glb', 'loona.glb', 'shameless_loona_pose.glb']
+          import collections, hashlib, json, os, pathlib, struct
           out = pathlib.Path('glb-inspection'); out.mkdir(exist_ok=True)
           reports = []
-          for name in files:
-              r = {'file': name}
+          for path in sorted(pathlib.Path('.').glob('*.glb')):
+              r = {'file': path.name}
               try:
-                  data = pathlib.Path(name).read_bytes()
+                  data = path.read_bytes()
                   magic, version, length = struct.unpack_from('<4sII', data)
                   if magic != b'glTF' or version != 2 or length != len(data):
                       raise ValueError('Invalid GLB v2 header or length')
                   pos = 12; chunks = []
                   while pos < length:
+                      if pos + 8 > length: raise ValueError('Truncated chunk header')
                       size, kind = struct.unpack_from('<II', data, pos); pos += 8
-                      if size % 4 or pos + size > length:
-                          raise ValueError('Invalid chunk alignment or length')
+                      if size % 4 or pos + size > length: raise ValueError('Invalid chunk size/alignment')
                       chunks.append((kind, data[pos:pos+size])); pos += size
-                  if not chunks or chunks[0][0] != 0x4E4F534A:
-                      raise ValueError('Missing first JSON chunk')
-                  g = json.loads(chunks[0][1])
-                  nodes = g.get('nodes', []); meshes = g.get('meshes', [])
-                  parents = {}
+                  if not chunks or chunks[0][0] != 0x4E4F534A: raise ValueError('Missing first JSON chunk')
+                  g = json.loads(chunks[0][1]); nodes = g.get('nodes', []); meshes = g.get('meshes', [])
+                  skins = g.get('skins', []); parents = {}; warnings = []
                   for i, node in enumerate(nodes):
                       for child in node.get('children', []):
-                          if not isinstance(child, int) or not 0 <= child < len(nodes):
-                              raise ValueError('Invalid child node index')
+                          if type(child) is not int or not 0 <= child < len(nodes): raise ValueError('Invalid child node index')
                           parents.setdefault(child, []).append(i)
-                  r.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest(), asset=g.get('asset'), extensionsUsed=g.get('extensionsUsed', []), extensionsRequired=g.get('extensionsRequired', []), nodeCount=len(nodes), meshCount=len(meshes), materialCount=len(g.get('materials', [])), imageCount=len(g.get('images', [])))
-                  r['nodes'] = [dict(index=i, parents=parents.get(i, []), **n) for i, n in enumerate(nodes)]
-                  r['skins'] = g.get('skins', [])
-                  r['animations'] = g.get('animations', [])
-                  r['meshes'] = meshes
-                  r['materials'] = g.get('materials', [])
-                  r['images'] = g.get('images', [])
-                  r['externalResources'] = [x['uri'] for key in ['buffers', 'images'] for x in g.get(key, []) if 'uri' in x and not x['uri'].startswith('data:')]
-                  r['morphTargetCounts'] = [[len(p.get('targets', [])) for p in m.get('primitives', [])] for m in meshes]
-                  (out / (name + '.metadata.json')).write_text(json.dumps(g, indent=2))
+                  joints = set()
+                  for skin in skins:
+                      for joint in skin.get('joints', []):
+                          if type(joint) is not int or not 0 <= joint < len(nodes): raise ValueError('Invalid skin joint index')
+                          joints.add(joint)
+                  names = collections.Counter(n.get('name') for n in nodes if n.get('name'))
+                  duplicates = [name for name, count in names.items() if count > 1]
+                  if duplicates: warnings.append('Duplicate node names')
+                  if any(len(p) > 1 for p in parents.values()): warnings.append('Nodes with multiple parents')
+                  external = [x['uri'] for key in ('buffers', 'images') for x in g.get(key, []) if 'uri' in x and not x['uri'].startswith('data:')]
+                  if external: warnings.append('External resources required')
+                  primitives = [p for mesh in meshes for p in mesh.get('primitives', [])]
+                  r.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest(), nodes=len(nodes), meshes=len(meshes), primitives=len(primitives), skins=len(skins), uniqueJoints=len(joints), animations=len(g.get('animations', [])), materials=len(g.get('materials', [])), images=len(g.get('images', [])), morphTargetSlots=sum(len(p.get('targets', [])) for p in primitives), duplicateNames=duplicates, externalResources=external, warnings=warnings, extensionsRequired=g.get('extensionsRequired', []))
+                  r['nodeInventory'] = [dict(index=i, name=n.get('name', ''), parents=parents.get(i, []), joint=i in joints, mesh=n.get('mesh'), skin=n.get('skin')) for i, n in enumerate(nodes)]
+                  (out / (path.name + '.metadata.json')).write_text(json.dumps(g, indent=2))
               except Exception as e:
                   r['error'] = str(e)
               reports.append(r)
           (out / 'inspection.json').write_text(json.dumps(reports, indent=2))
-          lines = ['# Additional GLB structural inspection', '', 'Metadata only: no visual rendering, deformation validation, license clearance, or calibration compatibility is established.', '', '| Model | Bytes | Nodes | Meshes | Skins | Animations | Status |', '|---|---:|---:|---:|---:|---:|---|']
+          columns = ['file', 'nodes', 'uniqueJoints', 'meshes', 'primitives', 'skins', 'animations', 'morphTargetSlots', 'materials', 'images']
+          lines = ['# Current GLB inventories', '', 'Metadata inspection only; not a rendering, deformation, full glTF validation, or calibration pass. Morph slots are summed across primitives, not unique controls.', '', '| ' + ' | '.join(columns + ['status']) + ' |', '|' + '|'.join(['---'] * (len(columns) + 1)) + '|']
           for r in reports:
-              lines.append('| {} | {} | {} | {} | {} | {} | {} |'.format(r['file'], r.get('bytes', ''), r.get('nodeCount', ''), r.get('meshCount', ''), len(r.get('skins', [])), len(r.get('animations', [])), r.get('error', 'Metadata parsed')))
-          summary = chr(10).join(lines)
+              status = r.get('error') or '; '.join(r.get('warnings', [])) or 'Metadata parsed'
+              lines.append('| ' + ' | '.join(str(r.get(c, '')) for c in columns) + ' | ' + status.replace('|', '/') + ' |')
+          summary = '\n'.join(lines)
           (out / 'summary.md').write_text(summary)
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
-              f.write(summary)
-          if any('error' in r for r in reports):
-              raise SystemExit('One or more GLBs failed inspection; see artifact')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f: f.write(summary)
+          if not reports or any('error' in r for r in reports): raise SystemExit('Inspection errors; see artifact')
       - uses: actions/upload-artifact@v4
         if: always()
         with:
