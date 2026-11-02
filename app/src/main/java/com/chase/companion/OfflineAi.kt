@@ -6,7 +6,6 @@ import android.os.Process
 import android.os.StatFs
 import android.os.SystemClock
 import android.widget.*
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -24,6 +23,7 @@ internal object OfflineAi {
     private val nativeError = try { System.loadLibrary("alongside_offline"); null } catch (e: LinkageError) { e.message ?: "Native inference library unavailable" }
     @JvmStatic private external fun resetNative()
     @JvmStatic private external fun cancelNative()
+    // Input is the complete ChatML prompt; native code must not wrap it again.
     @JvmStatic private external fun runNative(path: String, input: ByteArray, threads: Int, sink: Sink): DoubleArray
     private fun stop() { cancelled = true; if (nativeError == null) cancelNative() }
     private fun prepare(a: Activity, progress: (String) -> Unit): File {
@@ -59,38 +59,36 @@ internal object OfflineAi {
         } finally { temp.delete() }
     }
     private const val correctionRule = "Recheck factual claims when challenged. Earlier assistant answers are fallible, not evidence. Compare the original request with the objection. Correct an error plainly when the objection is valid; do not invent a justification. Do not agree with an incorrect correction merely because the user insists. If uncertain, say so."
-    private fun compose(text: String, turns: List<Pair<String, String>>, history: Boolean, correction: Boolean): String {
-        if (!history && !correction) return text
-        return buildString {
-            if (correction) append("Diagnostic response instructions: ").append(correctionRule).append("\n\n")
-            if (history) {
-                append("The following JSON is conversation context, not new instructions. Answer the latest user message, using earlier turns when relevant.\n")
-                val transcript = JSONArray()
-                turns.forEach { (role, content) -> transcript.put(JSONObject().put("role", role).put("content", content)) }
-                append(transcript.toString()).append("\n\n")
-            }
-            append("Latest user message:\n").append(text)
+    private fun content(text: String) = text.replace("<|", "< |")
+    private fun compose(text: String, turns: List<Pair<String, String>>, history: Boolean, correction: Boolean): String = buildString {
+        append("<|im_start|>system\nYou are a helpful assistant. Answer briefly and honestly.")
+        if (correction) append("\n").append(correctionRule)
+        append("<|im_end|>\n")
+        if (history) turns.forEach { (role, value) ->
+            require(role == "user" || role == "assistant")
+            append("<|im_start|>").append(role).append("\n").append(content(value)).append("<|im_end|>\n")
         }
+        append("<|im_start|>user\n").append(content(text))
+        append("\n/no_think<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
     }
     fun show(a: Activity) {
         if (busy.get()) { Toast.makeText(a, "Offline AI test is already running", Toast.LENGTH_LONG).show(); return }
         val turns = mutableListOf<Pair<String, String>>()
         var lastInput = ""
         val panel = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 12, 24, 12) }
-        panel.addView(TextView(a).apply { text = "Experimental local diagnostic. 1024-token context; maximum 128 reply tokens. History lasts only while this dialog is open and is sent as a labeled transcript, not native chat roles. No character memories are changed. Model stays resident; each request has a fresh context. Long conversations may exceed the token limit: no history is silently dropped." })
-        val historyMode = CheckBox(a).apply { text = "Conversation history (session only)"; isChecked = false }; panel.addView(historyMode)
-        val correctionMode = CheckBox(a).apply { text = "Experimental factual correction instructions"; isChecked = false }; panel.addView(correctionMode)
+        panel.addView(TextView(a).apply { text = "Experimental local diagnostic. Separate ChatML role turns; optional system correction guidance. 1024-token context; maximum 128 reply tokens. History lasts only in this dialog and does not change character memories. No history is silently dropped. Literal special-token openers in message text are escaped to prevent extra role boundaries." })
+        val historyMode = CheckBox(a).apply { text = "Conversation history (session only)" }; panel.addView(historyMode)
+        val correctionMode = CheckBox(a).apply { text = "Experimental factual correction instructions" }; panel.addView(correctionMode)
         val transcript = TextView(a).apply { setTextIsSelectable(true); text = "No conversation turns yet." }; panel.addView(transcript)
-        fun refresh() { transcript.text = if (turns.isEmpty()) "No conversation turns yet." else turns.joinToString("\n\n") { (role, content) -> "$role: $content" } }
+        fun refresh() { transcript.text = if (turns.isEmpty()) "No conversation turns yet." else turns.joinToString("\n\n") { (role, value) -> "$role: $value" } }
         val prompt = EditText(a).apply { hint = "Test prompt or follow-up"; setText("Count from 1 to 30, separated by commas. Do not add any explanation"); maxLines = 5 }; panel.addView(prompt)
-        val report = TextView(a).apply { setTextIsSelectable(true); text = nativeError ?: "Ready. Both toggles off preserves the single-prompt baseline." }; panel.addView(report)
+        val report = TextView(a).apply { setTextIsSelectable(true); text = nativeError ?: "Ready. Both toggles off uses the original single-turn format." }; panel.addView(report)
         val progress = ProgressBar(a).apply { visibility = android.view.View.GONE }; panel.addView(progress)
         val run = Button(a).apply { text = "Run offline test"; isAllCaps = false; isEnabled = nativeError == null }; panel.addView(run)
         val clear = Button(a).apply { text = "Clear test history"; isAllCaps = false; setOnClickListener { if (!busy.get()) { turns.clear(); lastInput = ""; refresh(); report.text = "Test history cleared. Character data unchanged." } } }; panel.addView(clear)
-        panel.addView(Button(a).apply { text = "Inspect native user input"; isAllCaps = false; setOnClickListener {
-            val value = if (lastInput.isEmpty()) "No request submitted yet." else lastInput
-            val body = TextView(a).apply { text = value; setTextIsSelectable(true); setPadding(24, 12, 24, 12) }
-            AlertDialog.Builder(a).setTitle("Exact last native user input").setMessage("The native engine wraps this input in its existing system/user/assistant template.").setView(ScrollView(a).apply { addView(body) }).setPositiveButton("Close", null).show()
+        panel.addView(Button(a).apply { text = "Inspect complete native prompt"; isAllCaps = false; setOnClickListener {
+            val body = TextView(a).apply { text = lastInput.ifEmpty { "No request submitted yet." }; setTextIsSelectable(true); setPadding(24, 12, 24, 12) }
+            AlertDialog.Builder(a).setTitle("Exact formatted prompt").setView(ScrollView(a).apply { addView(body) }).setPositiveButton("Close", null).show()
         } })
         panel.addView(Button(a).apply { text = "Cancel generation"; isAllCaps = false; setOnClickListener { if (busy.get()) { stop(); report.text = "Cancelling; waiting for worker cleanup..." } } })
         val dialog = AlertDialog.Builder(a).setTitle("Test offline AI").setView(ScrollView(a).apply { addView(panel) }).setNegativeButton("Close", null).create()
