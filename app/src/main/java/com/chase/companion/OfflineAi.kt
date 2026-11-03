@@ -23,7 +23,6 @@ internal object OfflineAi {
     private val nativeError = try { System.loadLibrary("alongside_offline"); null } catch (e: LinkageError) { e.message ?: "Native inference library unavailable" }
     @JvmStatic private external fun resetNative()
     @JvmStatic private external fun cancelNative()
-    // Input is the complete ChatML prompt; native code must not wrap it again.
     @JvmStatic private external fun runNative(path: String, input: ByteArray, threads: Int, sink: Sink): DoubleArray
     private fun stop() { cancelled = true; if (nativeError == null) cancelNative() }
     private fun prepare(a: Activity, progress: (String) -> Unit): File {
@@ -60,9 +59,10 @@ internal object OfflineAi {
     }
     private const val correctionRule = "Recheck factual claims when challenged. Earlier assistant answers are fallible, not evidence. Compare the original request with the objection. Correct an error plainly when the objection is valid; do not invent a justification. Do not agree with an incorrect correction merely because the user insists. If uncertain, say so."
     private fun content(text: String) = text.replace("<|", "< |")
-    private fun compose(text: String, turns: List<Pair<String, String>>, history: Boolean, correction: Boolean): String = buildString {
+    private fun compose(text: String, turns: List<Pair<String, String>>, history: Boolean, correction: Boolean, recovery: Boolean = false): String = buildString {
         append("<|im_start|>system\nYou are a helpful assistant. Answer briefly and honestly.")
-        if (correction) append("\n").append(correctionRule)
+        if (correction || recovery) append("\n").append(correctionRule)
+        if (recovery) append("\nA repetition safeguard requested a fresh attempt. Previous assistant messages were excluded, but previous user messages remain in order. Re-evaluate the task against the latest user message. Do not invent what an omitted assistant message said. Follow the requested output format. If the available context is insufficient, say so. A user correction can be wrong; check it rather than agreeing automatically.")
         append("<|im_end|>\n")
         if (history) turns.forEach { (role, value) ->
             require(role == "user" || role == "assistant")
@@ -76,19 +76,20 @@ internal object OfflineAi {
         val turns = mutableListOf<Pair<String, String>>()
         var lastInput = ""
         val panel = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 12, 24, 12) }
-        panel.addView(TextView(a).apply { text = "Experimental local diagnostic. Separate ChatML role turns; optional system correction guidance. 1024-token context; maximum 128 reply tokens. History lasts only in this dialog and does not change character memories. No history is silently dropped. Literal special-token openers in message text are escaped to prevent extra role boundaries." })
-        val historyMode = CheckBox(a).apply { text = "Conversation history (session only)" }; panel.addView(historyMode)
-        val correctionMode = CheckBox(a).apply { text = "Experimental factual correction instructions" }; panel.addView(correctionMode)
+        panel.addView(TextView(a).apply { text = "Local diagnostic only; character memories are unchanged. History and correction guidance default ON. Turn history uses separate ChatML roles. The correction-loop guard is an English-language heuristic, not a fact checker: after a challenged answer repeats, it makes at most one fresh attempt with prior assistant messages excluded. Both prompts remain inspectable. No normal history is silently trimmed. 1024-token context; maximum 128 tokens per attempt. Overlong prompts fail visibly." })
+        val historyMode = CheckBox(a).apply { text = "Conversation history (session only; OFF means no previous turns)"; isChecked = true }; panel.addView(historyMode)
+        val correctionMode = CheckBox(a).apply { text = "Factual correction guidance"; isChecked = true }; panel.addView(correctionMode)
+        val guardMode = CheckBox(a).apply { text = "Correction-loop guard (one retry maximum)"; isChecked = true }; panel.addView(guardMode)
         val transcript = TextView(a).apply { setTextIsSelectable(true); text = "No conversation turns yet." }; panel.addView(transcript)
         fun refresh() { transcript.text = if (turns.isEmpty()) "No conversation turns yet." else turns.joinToString("\n\n") { (role, value) -> "$role: $value" } }
         val prompt = EditText(a).apply { hint = "Test prompt or follow-up"; setText("Count from 1 to 30, separated by commas. Do not add any explanation"); maxLines = 5 }; panel.addView(prompt)
-        val report = TextView(a).apply { setTextIsSelectable(true); text = nativeError ?: "Ready. Both toggles off uses the original single-turn format." }; panel.addView(report)
+        val report = TextView(a).apply { setTextIsSelectable(true); text = nativeError ?: "Ready. Conversation history, correction guidance and loop recovery are ON. Sampling settings are unchanged." }; panel.addView(report)
         val progress = ProgressBar(a).apply { visibility = android.view.View.GONE }; panel.addView(progress)
         val run = Button(a).apply { text = "Run offline test"; isAllCaps = false; isEnabled = nativeError == null }; panel.addView(run)
         val clear = Button(a).apply { text = "Clear test history"; isAllCaps = false; setOnClickListener { if (!busy.get()) { turns.clear(); lastInput = ""; refresh(); report.text = "Test history cleared. Character data unchanged." } } }; panel.addView(clear)
-        panel.addView(Button(a).apply { text = "Inspect complete native prompt"; isAllCaps = false; setOnClickListener {
+        panel.addView(Button(a).apply { text = "Inspect complete native prompt(s)"; isAllCaps = false; setOnClickListener {
             val body = TextView(a).apply { text = lastInput.ifEmpty { "No request submitted yet." }; setTextIsSelectable(true); setPadding(24, 12, 24, 12) }
-            AlertDialog.Builder(a).setTitle("Exact formatted prompt").setView(ScrollView(a).apply { addView(body) }).setPositiveButton("Close", null).show()
+            AlertDialog.Builder(a).setTitle("Exact formatted prompt(s)").setView(ScrollView(a).apply { addView(body) }).setPositiveButton("Close", null).show()
         } })
         panel.addView(Button(a).apply { text = "Cancel generation"; isAllCaps = false; setOnClickListener { if (busy.get()) { stop(); report.text = "Cancelling; waiting for worker cleanup..." } } })
         val dialog = AlertDialog.Builder(a).setTitle("Test offline AI").setView(ScrollView(a).apply { addView(panel) }).setNegativeButton("Close", null).create()
@@ -98,42 +99,64 @@ internal object OfflineAi {
             if (text.isEmpty() || text.length > 1000) { report.text = "Enter 1-1000 characters."; return@setOnClickListener }
             val useHistory = historyMode.isChecked
             val useCorrection = correctionMode.isChecked
-            val input = compose(text, turns.toList(), useHistory, useCorrection)
+            val useGuard = guardMode.isChecked && useHistory
+            val snapshot = turns.toList()
+            val input = compose(text, snapshot, useHistory, useCorrection)
             if (!busy.compareAndSet(false, true)) return@setOnClickListener
             cancelled = false; resetNative(); lastInput = input
-            run.isEnabled = false; prompt.isEnabled = false; clear.isEnabled = false; historyMode.isEnabled = false; correctionMode.isEnabled = false
+            run.isEnabled = false; prompt.isEnabled = false; clear.isEnabled = false; historyMode.isEnabled = false; correctionMode.isEnabled = false; guardMode.isEnabled = false
             progress.visibility = android.view.View.VISIBLE; report.text = "Preparing model / processing..."
             worker.execute {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
                 val bytes = ByteArrayOutputStream()
                 var phase = "Preparing bundled model..."
+                var attempt = 1
                 fun publish(value: String) { a.runOnUiThread { if (!a.isDestroyed && dialog.isShowing) report.text = value } }
                 fun output() = bytes.toString(Charsets.UTF_8.name())
                 val started = SystemClock.elapsedRealtime()
                 try {
                     val model = prepare(a) { phase = it; publish(it) }
+                    fun generate(formatted: String): DoubleArray {
+                        check(!cancelled) { "Cancelled" }
+                        return runNative(model.absolutePath, formatted.toByteArray(Charsets.UTF_8), (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4), object : Sink {
+                            override fun phase(text: String) { phase = text; publish("Attempt $attempt: " + phase + "\n\n" + output()) }
+                            override fun chunk(chunk: ByteArray) { bytes.write(chunk); publish("Attempt $attempt: " + phase + "\n\n" + output()) }
+                        })
+                    }
+                    var result = generate(input)
                     check(!cancelled) { "Cancelled" }
-                    val result = runNative(model.absolutePath, input.toByteArray(Charsets.UTF_8), (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4), object : Sink {
-                        override fun phase(text: String) { phase = text; publish(phase + "\n\n" + output()) }
-                        override fun chunk(chunk: ByteArray) { bytes.write(chunk); publish(phase + "\n\n" + output()) }
-                    })
-                    check(!cancelled) { "Cancelled" }
-                    val answer = output()
+                    var answer = output()
+                    val repeated = useGuard && OfflineLoopGuard.shouldRecover(text, answer, snapshot)
+                    var blocked = false
+                    if (repeated) {
+                        val rejected = answer
+                        val retryInput = compose(text, snapshot.filter { it.first == "user" }, true, true, true)
+                        a.runOnUiThread { lastInput = "ATTEMPT 1\n$input\n\nRECOVERY ATTEMPT 2 (prior assistant turns excluded)\n$retryInput" }
+                        check(!cancelled) { "Cancelled" }
+                        attempt = 2; bytes.reset()
+                        publish("Repeated answer after a challenge detected. Making ONE fresh attempt; prior user messages retained, prior assistant messages excluded. The saved transcript is unchanged.")
+                        result = generate(retryInput)
+                        check(!cancelled) { "Cancelled" }
+                        answer = output()
+                        blocked = OfflineLoopGuard.similar(answer, rejected) || OfflineLoopGuard.shouldRecover(text, answer, snapshot)
+                    }
                     val capped = result[3] >= 128.0
+                    val accepted = !blocked && !capped && answer.isNotBlank()
                     val speed = if (result[2] > 0) result[3] * 1000 / result[2] else 0.0
-                    val metrics = String.format(Locale.US, "\n\nLoad/context: %.2f s\nPrompt processing: %.2f s\nGeneration: %.2f s; %.0f tokens; %.2f tokens/s\nFirst token after native start: %.2f s\nTotal including preparation: %.2f s\nContext released; model remains resident.", result[0] / 1000, result[1] / 1000, result[2] / 1000, result[3], speed, result[4] / 1000, (SystemClock.elapsedRealtime() - started) / 1000.0)
+                    val metrics = String.format(Locale.US, "\n\nLast-attempt load/context: %.2f s\nLast-attempt prompt processing: %.2f s\nLast-attempt generation: %.2f s; %.0f tokens; %.2f tokens/s\nLast-attempt first token: %.2f s\nTotal including preparation and any retry: %.2f s\nAttempts: %d; context released; model remains resident.", result[0] / 1000, result[1] / 1000, result[2] / 1000, result[3], speed, result[4] / 1000, (SystemClock.elapsedRealtime() - started) / 1000.0, attempt)
+                    val displayed = if (blocked) "APP SAFEGUARD: The recovery attempt still repeated an earlier answer. No further automatic retries were made. This exchange was not saved to history. This does not establish which answer is correct." else answer
                     a.runOnUiThread {
                         if (!a.isDestroyed && dialog.isShowing && !cancelled) {
-                            if (useHistory && !capped && answer.isNotBlank()) { turns.add("user" to text); turns.add("assistant" to answer); refresh(); prompt.setText("") }
-                            report.text = answer + metrics + "\nHistory: $useHistory; correction instructions: $useCorrection." + if (capped) "\nReply reached token cap; this exchange was NOT added to history." else ""
+                            if (useHistory && accepted) { turns.add("user" to text); turns.add("assistant" to answer); refresh(); prompt.setText("") }
+                            report.text = displayed + metrics + "\nHistory: $useHistory; correction guidance: $useCorrection; loop guard active: $useGuard." + (if (repeated) "\nOne recovery attempt used; prior assistant turns excluded only for that attempt. Inspect both prompts above. A different reply is not proof of correctness." else "") + (if (capped) "\nReply reached token cap; exchange NOT added to history." else "") + (if (answer.isBlank()) "\nEmpty reply; exchange NOT added to history." else "")
                         }
                     }
                 } catch (e: Exception) {
-                    publish(output() + "\n\n" + if (cancelled) "Cancelled. Exchange not added to history." else "Offline test failed: ${e.message}\nHistory unchanged. If context is too long, clear test history or shorten the message.")
+                    publish(output() + "\n\n" + if (cancelled) "Cancelled. Exchange not added to history." else "Offline test failed: ${e.message}\nHistory unchanged. If context is too long, clear test history or shorten the message. Recovery never silently truncates user history.")
                 } finally {
                     a.runOnUiThread {
                         busy.set(false)
-                        if (!a.isDestroyed && dialog.isShowing) { run.isEnabled = nativeError == null; prompt.isEnabled = true; clear.isEnabled = true; historyMode.isEnabled = true; correctionMode.isEnabled = true; progress.visibility = android.view.View.GONE }
+                        if (!a.isDestroyed && dialog.isShowing) { run.isEnabled = nativeError == null; prompt.isEnabled = true; clear.isEnabled = true; historyMode.isEnabled = true; correctionMode.isEnabled = true; guardMode.isEnabled = true; progress.visibility = android.view.View.GONE }
                     }
                 }
             }
