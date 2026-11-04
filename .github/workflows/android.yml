@@ -8,13 +8,17 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
       - name: Apply and verify integrated companion behavior
         run: python3 tools/apply_companion_behavior.py
       - name: Stage inspection-only avatar variants
         run: python3 tools/prepare_node_variants.py
+      - name: Apply testing UI, pose studio, developer controls and Qwen3-4B integration
+        run: |
+          python3 -m py_compile tools/apply_testing_features.py
+          python3 tools/apply_testing_features.py
       - uses: actions/setup-java@v5
         with:
           distribution: oracle
@@ -59,10 +63,10 @@ jobs:
           actual=$(sed -nE 's/^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | tr -d ':\r ' | tr '[:upper:]' '[:lower:]')
           count=$(grep -cE '^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest:' "$RUNNER_TEMP/apk-signature.txt" || true)
           test "$count" = 1 && test "$actual" = "$expected" || { echo '::error::Signing mismatch; upload blocked.'; exit 1; }
-          echo 'Diagnostic APK compiled; variant node motion and rendering require device testing.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Experimental testing APK compiled and signed. UI, pose timing, camera resets, model gates and Qwen performance require device testing.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
-          name: alongside-settings-and-cues-debug-${{ github.run_number }}
+          name: alongside-testing-debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
@@ -71,6 +75,7 @@ jobs:
           path: |
             app/src/main/AndroidManifest.xml
             app/src/main/java/com/chase/companion/
+            vendor/offline-assets/offline/model.json
       - name: Remove runner signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/companion-signing.jks" "$RUNNER_TEMP/companion-cert.der"
