@@ -17,3 +17,12 @@ else:
 
 import runpy
 runpy.run_path(str(ROOT / 'tools/apply_node_animation_revision.py'), run_name='__main__')
+
+gradle = ROOT / 'app/build.gradle'
+source = gradle.read_text()
+old = "tasks.named('assembleDebug').configure { dependsOn('testDebugUnitTest') }"
+new = "tasks.configureEach { task ->\n    if (task.name == 'assembleDebug') {\n        task.dependsOn('testDebugUnitTest')\n    }\n}"
+if source.count(old) != 1:
+    raise RuntimeError('Expected exactly one debug assembly test dependency; refusing an unsafe replacement.')
+gradle.write_text(source.replace(old, new, 1))
+print('Deferred assembleDebug configuration until the Android task is available; unit-test dependency retained.')
