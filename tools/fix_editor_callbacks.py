@@ -14,3 +14,6 @@ elif source.count(old) == 2 and new not in source:
     print('Fixed both editor-opening callbacks: explicit Unit after optional invocation.')
 else:
     raise RuntimeError('Expected exactly two editor-opening callbacks; refusing an unsafe replacement.')
+
+import runpy
+runpy.run_path(str(ROOT / 'tools/apply_node_animation_revision.py'), run_name='__main__')
