@@ -19,6 +19,10 @@ jobs:
         run: |
           python3 -m py_compile tools/apply_testing_features.py
           python3 tools/apply_testing_features.py
+      - name: Apply themed animation editor, node layout and persistent microphone setting
+        run: |
+          python3 -m py_compile tools/apply_editor_revision.py
+          python3 tools/apply_editor_revision.py
       - uses: actions/setup-java@v5
         with:
           distribution: oracle
@@ -63,7 +67,7 @@ jobs:
           actual=$(sed -nE 's/^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | tr -d ':\r ' | tr '[:upper:]' '[:lower:]')
           count=$(grep -cE '^(Signer #[0-9]+|V2 Signer:) certificate SHA-256 digest:' "$RUNNER_TEMP/apk-signature.txt" || true)
           test "$count" = 1 && test "$actual" = "$expected" || { echo '::error::Signing mismatch; upload blocked.'; exit 1; }
-          echo 'Experimental testing APK compiled and signed. UI, pose timing, camera resets, model gates and Qwen performance require device testing.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Experimental testing APK compiled and signed. Revised editor, node layout and persistent mic require device testing. Wave excluded; AI configuration unchanged by this revision.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: alongside-testing-debug-${{ github.run_number }}
