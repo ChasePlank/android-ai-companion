@@ -26,3 +26,14 @@ if source.count(old) != 1:
     raise RuntimeError('Expected exactly one debug assembly test dependency; refusing an unsafe replacement.')
 gradle.write_text(source.replace(old, new, 1))
 print('Deferred assembleDebug configuration until the Android task is available; unit-test dependency retained.')
+
+activity = ROOT / 'app/src/main/java/com/chase/companion/AlongsideActivity.kt'
+source = activity.read_text()
+lines = source.splitlines(keepends=True)
+rows = [i for i, line in enumerate(lines) if 'button(panel,"Default home model")' in line]
+old = '}.setNegativeButton("Cancel",null).show() }'
+if len(rows) != 1 or lines[rows[0]].count(old) != 1:
+    raise RuntimeError('Expected exactly one generated home-model button; refusing an unsafe replacement.')
+lines[rows[0]] = lines[rows[0]].replace(old, old + ';', 1)
+activity.write_text(''.join(lines))
+print('Separated the generated home-model button from the following theme declaration.')
