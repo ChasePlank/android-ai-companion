@@ -1,0 +1,55 @@
+    private fun owners(): Set<String> = draft.optJSONArray("owned")?.let { x -> (0 until x.length()).map { x.getString(it) }.toSet() } ?: emptySet()
+    private fun ownership() { if(!draft.has("owned")) draft.put("owned",JSONArray(player.infer(draft).toList())) }
+    fun nodeEdited(node: String) { load(); ownership(); draft.put("owned",JSONArray((owners()+node).toList())); dirty=true }
+    fun owns(node: String)=player.owns(node)
+    private fun groupKey()="default_animations:${character()}"
+    private fun interval(g: JSONObject): Double { val lo=g.optDouble("min",5.0).coerceAtLeast(0.1); val hi=g.optDouble("max",lo).coerceAtLeast(lo); return if(g.optBoolean("randomInterval")) lo+Math.random()*(hi-lo) else lo }
+    fun tick(time: Long,enabled: Boolean): Boolean {
+        player.tick(time); if(!enabled) return player.running()
+        load(); val raw=prefs.getString(groupKey(),"[]") ?: "[]"; val signature=key+raw
+        if(signature!=schedule) { player.cancelPrefix("auto:"); due.clear(); waiting.clear(); order.clear(); schedule=signature }
+        val now=time/1e9; val gs=JSONArray(raw)
+        for(i in 0 until gs.length()) {
+            val g=gs.getJSONObject(i); if(!g.optBoolean("enabled",true)) continue
+            val id="auto:"+g.getString("id"); if(player.contains(id)) continue
+            if(waiting.remove(id)) { due[id]=now+interval(g); continue }
+            if(now<due.getOrPut(id) { now+interval(g) }) continue
+            val ids=g.getJSONArray("animations"); if(ids.length()==0) continue
+            val at=if(g.optBoolean("randomOrder")) (Math.random()*ids.length()).toInt() else (order[id] ?: 0)%ids.length()
+            order[id]=at+1; val animation=library.optJSONObject(ids.getString(at))
+            if(animation!=null && player.request(id,animation)) waiting.add(id) else due[id]=now+interval(g)
+        }
+        player.tick(time); return player.running()
+    }
+    private fun schedules() {
+        val gs=JSONArray(prefs.getString(groupKey(),"[]") ?: "[]"); val p=LinearLayout(a).apply { orientation=LinearLayout.VERTICAL }
+        for(i in 0 until gs.length()) {
+            val g=gs.getJSONObject(i); p.addView(Switch(a).apply { text="Rotation ${i+1}"; isChecked=g.optBoolean("enabled",true); setOnCheckedChangeListener { _, on -> g.put("enabled",on); prefs.edit().putString(groupKey(),gs.toString()).apply() } })
+            pair(p,"Edit rotation ${i+1}","Delete rotation ${i+1}",{ editSchedule(gs,i) },{ gs.remove(i); prefs.edit().putString(groupKey(),gs.toString()).apply(); schedules() })
+        }
+        button(p,"Add interval / rotation") { editSchedule(gs,-1) }
+        AlertDialog.Builder(a).setTitle("Default animations · ${character()}").setView(ScrollView(a).apply { addView(p) }).setPositiveButton("Close",null).show()
+    }
+    private fun editSchedule(gs: JSONArray,index: Int) {
+        val ids=library.keys().asSequence().toList(); if(ids.isEmpty()) { Toast.makeText(a,"Save an animation first.",Toast.LENGTH_SHORT).show(); return }
+        val g=if(index>=0) copy(gs.getJSONObject(index)) else JSONObject().put("id",UUID.randomUUID().toString()).put("enabled",true).put("min",5.0).put("max",10.0)
+        val old=g.optJSONArray("animations") ?: JSONArray(); val current=(0 until old.length()).map { ids.indexOf(old.getString(it))+1 }.filter { it>0 }
+        val body=LinearLayout(a).apply { orientation=LinearLayout.VERTICAL }
+        caption(body,ids.mapIndexed { n,id -> "${n+1}: ${library.getJSONObject(id).optString("name","Animation")}" }.joinToString("\n"))
+        caption(body,"Enter animation numbers in rotation order. Random mode chooses from this list. Intervals begin after completion; conflicts wait.")
+        val list=EditText(a).apply { hint="Example: 2,1,3"; setText(current.joinToString(",")) }; body.addView(list)
+        val random=CheckBox(a).apply { text="Random choice from list"; isChecked=g.optBoolean("randomOrder") }; body.addView(random)
+        val randomTime=CheckBox(a).apply { text="Random interval (min–max)"; isChecked=g.optBoolean("randomInterval") }; body.addView(randomTime)
+        fun field(h: String,value: Double)=EditText(a).apply { hint=h; inputType=InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(value.toString()); body.addView(this) }
+        val low=field("Fixed interval / minimum seconds",g.optDouble("min",5.0)); val high=field("Maximum seconds",g.optDouble("max",10.0))
+        val d=AlertDialog.Builder(a).setTitle("Interval and rotation").setView(ScrollView(a).apply { addView(body) }).setNegativeButton("Cancel",null).setPositiveButton("Save",null).create()
+        d.setOnShowListener { d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val tokens=list.text.toString().split(','); val ns=tokens.mapNotNull { it.trim().toIntOrNull() }; val lo=low.text.toString().toDoubleOrNull(); val hi=high.text.toString().toDoubleOrNull()
+            if(ns.isEmpty() || ns.size!=tokens.size || ns.any { it !in 1..ids.size } || ns.size!=ns.toSet().size) { list.error="Enter distinct listed numbers in your chosen order."; return@setOnClickListener }
+            if(lo==null || hi==null || !lo.isFinite() || !hi.isFinite() || lo<0.1 || (randomTime.isChecked && hi<lo)) { low.error="Use positive seconds; maximum must be at least minimum."; return@setOnClickListener }
+            g.put("animations",JSONArray(ns.map { ids[it-1] })).put("min",lo).put("max",hi).put("randomOrder",random.isChecked).put("randomInterval",randomTime.isChecked)
+            if(index>=0) gs.put(index,g) else gs.put(g)
+            prefs.edit().putString(groupKey(),gs.toString()).apply(); d.dismiss()
+        } }; d.show()
+    }
+}
