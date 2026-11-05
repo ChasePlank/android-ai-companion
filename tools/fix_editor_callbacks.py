@@ -40,3 +40,4 @@ print('Separated the generated home-model button from the following theme declar
 
 runpy.run_path(str(ROOT / 'tools/fix_animation_continuity.py'), run_name='__main__')
 runpy.run_path(str(ROOT / 'tools/fix_animation_dispatch.py'), run_name='__main__')
+runpy.run_path(str(ROOT / 'tools/fix_authored_pose_capture.py'), run_name='__main__')
