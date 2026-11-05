@@ -37,3 +37,5 @@ if len(rows) != 1 or lines[rows[0]].count(old) != 1:
 lines[rows[0]] = lines[rows[0]].replace(old, old + ';', 1)
 activity.write_text(''.join(lines))
 print('Separated the generated home-model button from the following theme declaration.')
+
+runpy.run_path(str(ROOT / 'tools/fix_animation_continuity.py'), run_name='__main__')
