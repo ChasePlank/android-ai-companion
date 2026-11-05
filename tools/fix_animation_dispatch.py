@@ -11,8 +11,8 @@ s = p.read_text()
 old = 'val ids = names.indices.filter { i -> (next in listOf("Node Control", "Defaults", "Animations", "Toggles", "Full Rig Inspection", "Character Settings") || i < 3) && testing.allowed(names[i]) }'
 s = once(s, old, 'val ids = names.indices.filter { testing.allowed(names[it]) }')
 old = '!names[it].startsWith("naked ")'
-if s.count(old) != 2:
-    raise RuntimeError('Expected home selection and home fallback eligibility filters.')
+if s.count(old) != 3:
+    raise RuntimeError('Expected home selection plus startup and navigation fallback eligibility filters.')
 s = s.replace(old, 'testing.allowed(names[it])')
 values = {}
 for field in ('names','files'):
